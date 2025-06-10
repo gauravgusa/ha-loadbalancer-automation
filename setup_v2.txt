@@ -1,0 +1,220 @@
+Overview
+This guide profiles all steps and provides the necessary code to set up a High Availability Load Balancer using HAProxy and Keepalived, with Apache web servers as backends. The automation leverages Ansible playbooks, Helm charts, and scripts, and is designed for two machines—each acting as both HAProxy and Keepalived nodes, with Apache web servers as the backend.
+
+Prerequisites
+Two Linux servers (e.g., Ubuntu 22.04 or CentOS 8)
+
+Root or sudo access on both
+
+SSH connectivity between nodes
+
+Basic knowledge of Ansible and shell scripting
+
+Step 1: Prepare the Environment
+On both servers:
+
+sudo apt update
+sudo apt install -y haproxy keepalived apache2 ansible
+
+Step 2: Ansible Inventory and Group Variables
+
+2.1
+ansible/inventory/hosts.yml
+
+all:
+  children:
+    loadbalancers:
+      hosts:
+        lb1:
+          ansible_host: 192.168.1.10
+        lb2:
+          ansible_host: 192.168.1.11
+    webservers:
+      hosts:
+        web1:
+          ansible_host: 192.168.1.20
+        web2:
+          ansible_host: 192.168.1.21
+
+2.2
+ansible/inventory/group_vars/loadbalancers.yml
+
+haproxy_backend_servers:
+  - { name: "web1", address: "192.168.1.20", port: 80 }
+  - { name: "web2", address: "192.168.1.21", port: 80 }
+keepalived_vip: "192.168.1.100"
+keepalived_interface: "eth0"
+
+2.3
+ansible/inventory/group_vars/webservers.yml
+apache_port: 80
+
+Step 3: Ansible Roles
+3.1
+apache-webserver/tasks/main.yml
+
+- name: Install Apache
+  apt:
+    name: apache2
+    state: present
+  become: yes
+
+- name: Ensure Apache is running
+  service:
+    name: apache2
+    state: started
+    enabled: yes
+
+- name: Deploy custom index.html
+  copy:
+    dest: /var/www/html/index.html
+    content: "Welcome to {{ inventory_hostname }}"
+
+
+3.2
+haproxy/tasks/main.yml
+
+- name: Install HAProxy
+  apt:
+    name: haproxy
+    state: present
+  become: yes
+
+- name: Configure haproxy.cfg
+  template:
+    src: haproxy.cfg.j2
+    dest: /etc/haproxy/haproxy.cfg
+  notify: Restart HAProxy
+
+- name: Ensure HAProxy is running
+  service:
+    name: haproxy
+    state: started
+    enabled: yes
+
+# handlers/main.yml
+- name: Restart HAProxy
+  service:
+    name: haproxy
+    state: restarted
+
+3.3
+ansible/roles/haproxy/templates/haproxy.cfg.j2
+global
+    log /dev/log local0
+    maxconn 2048
+    daemon
+
+defaults
+    mode http
+    timeout connect 5000ms
+    timeout client 50000ms
+    timeout server 50000ms
+
+frontend http_front
+    bind *:80
+    default_backend apache_back
+
+backend apache_back
+    balance roundrobin
+    {% for server in haproxy_backend_servers %}
+    server {{ server.name }} {{ server.address }}:{{ server.port }} check
+    {% endfor %}
+
+
+3.4
+keepalived/tasks/main.yml
+
+- name: Install Keepalived
+  apt:
+    name: keepalived
+    state: present
+  become: yes
+
+- name: Configure keepalived.conf
+  template:
+    src: keepalived.conf.j2
+    dest: /etc/keepalived/keepalived.conf
+  notify: Restart Keepalived
+
+- name: Ensure Keepalived is running
+  service:
+    name: keepalived
+    state: started
+    enabled: yes
+
+# handlers/main.yml
+- name: Restart Keepalived
+  service:
+    name: keepalived
+    state: restarted
+
+
+3.5
+ansible/roles/keepalived/templates/keepalived.conf.j2
+vrrp_instance VI_1 {
+    state MASTER
+    interface {{ keepalived_interface }}
+    virtual_router_id 51
+    priority 101
+    advert_int 1
+    authentication {
+        auth_type PASS
+        auth_pass secretpass
+    }
+    virtual_ipaddress {
+        {{ keepalived_vip }}
+    }
+    track_script {
+        chk_haproxy
+    }
+}
+
+vrrp_script chk_haproxy {
+    script "pidof haproxy"
+    interval 2
+}
+
+
+
+
+gg note On the BACKUP node, set state BACKUP and priority 100 in the template.
+
+Step 4: Ansible Playbook
+
+4.1
+ansible/playbooks/site.yml
+- hosts: webservers
+  roles:
+    - apache-webserver
+
+- hosts: loadbalancers
+  roles:
+    - haproxy
+    - keepalived
+
+
+Step 5: Run the Playbook
+cd ansible
+ansible-playbook -i inventory/hosts.yml playbooks/site.yml
+
+
+Step 6: Test the Setup
+
+Access the Virtual IP (e.g., http://192.168.1.100) in your browser.
+
+Refresh the page to see responses from both Apache servers (each index.html shows the server name).
+
+To test failover, stop HAProxy or Keepalived on the primary load balancer and verify the VIP moves to the secondary node.
+
+Step 7: Scripts for Manual Installation
+scripts/install.sh
+
+#!/bin/bash
+sudo apt update
+sudo apt install -y haproxy keepalived apache2
+sudo systemctl enable haproxy keepalived apache2
+sudo systemctl start haproxy keepalived apache2
+
+
+
