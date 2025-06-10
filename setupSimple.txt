@@ -1,0 +1,125 @@
+Step 1: Prepare Your Inventory
+Create an inventory.ini file listing your HAProxy nodes:
+
+[haproxy]
+10.100.177.5 vrrp_state=MASTER vrrp_priority=101 vrrp_ip_interface=ens192
+10.100.177.6 vrrp_state=BACKUP vrrp_priority=100 vrrp_ip_interface=ens192
+
+[all:vars]
+ansible_user=root
+ansible_connection=ssh
+ansible_ssh_port=22
+
+Step 2: Ansible Playbook Structure
+Create a directory structure:
+
+ha-haproxy-setup/
+├── inventory.ini
+├── install.yaml
+├── roles/
+│   ├── haproxy/
+│   │   └── tasks/
+│   │       └── main.yml
+│   └── keepalived/
+│       └── tasks/
+│           └── main.yml
+
+
+Step 3: HAProxy Role (roles/haproxy/tasks/main.yml)
+---
+- name: Install HAProxy
+  apt:
+    name: haproxy
+    state: present
+  become: true
+
+- name: Configure HAProxy
+  template:
+    src: haproxy.cfg.j2
+    dest: /etc/haproxy/haproxy.cfg
+  notify:
+    - Restart HAProxy
+
+- name: Ensure HAProxy is running
+  service:
+    name: haproxy
+    state: started
+    enabled: true
+
+- name: Allow HAProxy through firewall
+  ufw:
+    rule: allow
+    port: 80
+    proto: tcp
+  when: ansible_os_family == "Debian"
+
+
+**
+(Add haproxy.cfg.j2 as a Jinja2 template for your config.)
+
+Step 4: Keepalived Role (roles/keepalived/tasks/main.yml)
+---
+- name: Install Keepalived
+  apt:
+    name: keepalived
+    state: present
+  become: true
+
+- name: Configure Keepalived
+  template:
+    src: keepalived.conf.j2
+    dest: /etc/keepalived/keepalived.conf
+  notify:
+    - Restart Keepalived
+
+- name: Ensure Keepalived is running
+  service:
+    name: keepalived
+    state: started
+    enabled: true
+
+**
+(Add keepalived.conf.j2 as a Jinja2 template for your config.)
+Step 5: Main Playbook (install.yaml)
+- name: Install and configure HAProxy and Keepalived
+  hosts: haproxy
+  become: true
+  roles:
+    - haproxy
+    - keepalived
+
+
+Step 6: Deploy HAProxy via Helm Chart (Kubernetes)
+**
+If you want to use Helm to deploy HAProxy in a Kubernetes cluster, you can run a shell task in Ansible, or do this manually:
+- name: Add HAProxy Helm repo
+  shell: helm repo add haproxytech https://haproxytech.github.io/helm-charts
+
+- name: Update Helm repos
+  shell: helm repo update
+
+- name: Install HAProxy via Helm
+  shell: helm install my-haproxy haproxytech/haproxy --namespace haproxy --create-namespace
+
+**
+You can also use the HAProxy Ingress Controller Helm chart for Kubernetes ingress:
+- name: Install HAProxy Kubernetes Ingress Controller
+  shell: helm install mycontroller haproxytech/kubernetes-ingress
+
+
+Step 7: Run the Playbook
+ansible-playbook -i inventory.ini install.yaml
+
+ummary Table: Classic vs Kubernetes (Helm) Deployment
+Deployment Type	  Tool	             How to Deploy (Ansible)	                  Example Command/Playbook
+Classic VMs	      HAProxy	           Ansible Role	                              See roles/haproxy
+Classic VMs	      Keepalived	       Ansible Role	                              See roles/keepalived
+Kubernetes	      HAProxy	           Helm Chart (via shell)	                    helm install ...
+Kubernetes      	Ingress Ctrl	     Helm Chart (via shell)	                    helm install ...
+
+
+Notes and Tips
+Use Jinja2 templates for both HAProxy and Keepalived configs to dynamically set VIP, priorities, and backend servers.
+For Kubernetes, ensure helm and kubectl are installed and configured.
+
+For firewall configuration and troubleshooting, see your memory entry on managing HAProxy firewall rules and troubleshooting NodePort services.
