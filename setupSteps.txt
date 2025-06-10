@@ -1,0 +1,151 @@
+
+To complete the setup of the HA Load Balancer Automation Package, you need to execute the provided installation script and ensure all components are properly configured and deployed. Below, I'll guide you through the steps to finish the setup based on the provided package structure and content. This assumes you have a compatible environment with the required tools (Ansible, Helm, kubectl) installed and access to the target servers.
+
+Prerequisites
+Environment Setup:
+Ensure all required tools are installed: ansible, ansible-playbook, kubectl, and helm. You can verify this by running:
+bash
+ansible --version
+helm version
+kubectl version --client
+Ensure SSH access to all target servers listed in ansible/inventory/hosts.yml (load balancers: 192.168.1.101, 192.168.1.102; web servers: 192.168.1.201, 192.168.1.202, 192.168.1.203) with the SSH key specified in ansible_ssh_private_key_file (~/.ssh/id_rsa).
+Ensure the user (ubuntu) has sudo privileges on all target servers.
+For Kubernetes deployment (optional), ensure you have a running Kubernetes cluster and kubectl is configured to communicate with it.
+Network Requirements:
+The virtual IP (192.168.1.100) must be available and not assigned to any device in the network.
+The network interface (eth0) should exist on all load balancer servers.
+Ensure firewall rules allow communication on ports 80, 443, 8404, 112 (VRRP), and 22 (SSH).
+Package Files:
+Verify that the entire package directory (ha-loadbalancer-automation/) is available on the machine where you’ll run the installation script.
+Ensure the config/environment.conf file is correctly configured with the IPs and network interface matching your environment.
+Steps to Complete the Setup
+Prepare the Configuration File: The provided config/environment.conf is incomplete. Below is the completed version based on the Ansible inventory and group variables:
+bash
+# config/environment.conf
+
+# Network Configuration
+VIRTUAL_IP="192.168.1.100"
+NETWORK_INTERFACE="eth0"
+
+# Load Balancer Configuration
+LOADBALANCER_IPS="192.168.1.101,192.168.1.102"
+LOADBALANCER_PRIORITY="110,100"
+
+# Web Server Configuration
+WEBSERVER_IPS="192.168.1.201,192.168.1.202,192.168.1.203"
+WEBSERVER_PORT="8888"
+
+# HAProxy Configuration
+HAPROXY_STATS_PORT="8404"
+HAPROXY_STATS_USER="admin"
+HAPROXY_STATS_PASSWORD="secure123!"
+
+# Keepalived Configuration
+VRRP_AUTH_PASSWORD="mypassword123"
+VRRP_ROUTER_ID="51"
+Save this file in the config/ directory. Ensure the values match your environment (e.g., NETWORK_INTERFACE may differ, such as ens33 or enp0s3).
+Set Up SSH Keys:
+Ensure the SSH key (~/.ssh/id_rsa) exists and is added to the SSH agent:
+bash
+ssh-add ~/.ssh/id_rsa
+Copy the public key to all target servers:
+bash
+ssh-copy-id ubuntu@192.168.1.101
+ssh-copy-id ubuntu@192.168.1.102
+ssh-copy-id ubuntu@192.168.1.201
+ssh-copy-id ubuntu@192.168.1.202
+ssh-copy-id ubuntu@192.168.1.203
+Run the Installation Script:
+Navigate to the ha-loadbalancer-automation/ directory:
+bash
+cd ha-loadbalancer-automation
+Make the installation script executable:
+bash
+chmod +x scripts/install.sh
+Run the installation script for Ansible-based deployment (without Kubernetes):
+bash
+./scripts/install.sh
+You’ll be prompted for the sudo password for the ansible_user (ubuntu) due to the --ask-become-pass flag.
+The script will:
+Check for required tools.
+Install Ansible dependencies (collections).
+Validate the configuration in config/environment.conf.
+Deploy HAProxy and Keepalived on load balancers (192.168.1.101, 192.168.1.102).
+Deploy Apache web servers on web servers (192.168.1.201, 192.168.1.202, 192.168.1.203).
+Configure firewalls and services.
+Run connectivity and load balancing tests.
+If you want to deploy to Kubernetes as well, use:
+bash
+./scripts/install.sh --kubernetes
+This requires a running Kubernetes cluster with Helm installed and configured.
+Verify the Deployment:
+After the script completes, check the deployment summary output, which includes:
+Virtual IP: http://192.168.1.100
+HAProxy stats: http://192.168.1.101:8404/stats (username: admin, password: secure123!)
+Test the load balancer by accessing the virtual IP in a browser or using curl:
+bash
+curl http://192.168.1.100
+You should see the HTML page from one of the web servers, with details like server hostname, IP, port, and server ID.
+Test load balancing by making multiple requests to verify that different web servers respond:
+bash
+for i in {1..5}; do curl -s http://192.168.1.100 | grep "Server ID"; done
+You should see responses from different server IDs (1, 2, or 3).
+Check HAProxy stats:
+bash
+curl -u admin:secure123! http://192.168.1.101:8404/stats
+Verify Keepalived by checking the virtual IP:
+bash
+ping 192.168.1.100
+The virtual IP should respond if the master load balancer (192.168.1.101) is active.
+Optional: Kubernetes Deployment: If you used the --kubernetes flag:
+Verify the namespace and deployments:
+bash
+kubectl get pods -n ha-loadbalancer
+Check the service:
+bash
+kubectl get svc -n ha-loadbalancer
+Note the external IP or LoadBalancer IP for accessing the service.
+Access the load balancer via the Kubernetes service IP or Ingress (if configured).
+Monitor the deployment:
+bash
+kubectl get serviceMonitor -n ha-loadbalancer
+Troubleshooting:
+If the installation fails, check docs/TROUBLESHOOTING.md for guidance.
+Common issues:
+SSH connectivity: Ensure SSH keys are set up and the ubuntu user can access all servers.
+Firewall issues: Verify that ports 80, 443, 8404, 112, and 22 are open.
+Virtual IP conflicts: Ensure 192.168.1.100 is not used by another device.
+Ansible errors: Check the inventory file (ansible/inventory/hosts.yml) for correct IPs and variables.
+Kubernetes issues: Ensure the cluster is accessible and Helm charts are valid.
+Check logs on load balancers and web servers:
+bash
+ssh ubuntu@192.168.1.101 "sudo tail -f /var/log/syslog"
+ssh ubuntu@192.168.1.201 "sudo tail -f /var/log/apache2/ha-webserver-error.log"
+Post-Setup Tasks:
+Enable SSL (Optional): If you want to enable SSL, update ansible/inventory/group_vars/loadbalancers.yml:
+yaml
+enable_ssl: true
+ssl_certificate_path: "/path/to/server.crt"
+ssl_private_key_path: "/path/to/server.key"
+Place the SSL certificate and key files on the load balancer servers and rerun the installation script.
+Monitoring: If enable_monitoring is true, ensure a monitoring system (e.g., Prometheus) is set up to scrape metrics from the ServiceMonitor in Kubernetes or HAProxy stats endpoint.
+Backup Configuration: Regularly back up the config/environment.conf and Ansible inventory files.
+Test Failover: Simulate a failure by stopping HAProxy on the master load balancer (192.168.1.101):
+bash
+ssh ubuntu@192.168.1.101 "sudo systemctl stop haproxy"
+Verify that the virtual IP (192.168.1.100) is taken over by the backup load balancer (192.168.1.102).
+Expected Outcome
+Ansible Deployment:
+Two load balancers running HAProxy and Keepalived, with 192.168.1.100 as the virtual IP.
+Three Apache web servers serving content on port 8888.
+Firewalls configured to allow necessary traffic.
+Load balancing verified with round-robin distribution across web servers.
+Kubernetes Deployment (if enabled):
+HAProxy and web server pods running in the ha-loadbalancer namespace.
+Access via a LoadBalancer service or Ingress.
+Autoscaling and monitoring enabled as per Helm chart configurations.
+Notes
+The setup assumes a private network (192.168.1.0/24). Adjust IPs in config/environment.conf and ansible/inventory/hosts.yml for your network.
+For production, replace default passwords (secure123!, mypassword123) with secure ones.
+If you encounter issues, refer to docs/TROUBLESHOOTING.md or provide specific error messages for further assistance.
+If you need help with specific steps, troubleshooting, or additional configurations (e.g., SSL setup, custom monitoring), let me know!
