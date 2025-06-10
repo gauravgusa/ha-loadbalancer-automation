@@ -1,0 +1,41 @@
+---
+- name: Deploy HA Load Balancer Infrastructure
+  hosts: localhost
+  gather_facts: false
+  tasks:
+    - name: Display deployment information
+      debug:
+        msg: |
+          Starting HA Load Balancer deployment
+          Web Servers: {{ groups['webservers'] | length }}
+          Load Balancers: {{ groups['loadbalancers'] | length }}
+          Virtual IP: {{ virtual_ip }}
+
+- import_playbook: webservers.yml
+- import_playbook: loadbalancers.yml
+
+- name: Post-deployment verification
+  hosts: localhost
+  gather_facts: false
+  tasks:
+    - name: Wait for services to be ready
+      pause:
+        seconds: 30
+        prompt: "Waiting for services to initialize..."
+
+    - name: Test load balancer connectivity
+      uri:
+        url: "http://{{ virtual_ip }}"
+        method: GET
+        status_code: 200
+      register: lb_test
+      retries: 5
+      delay: 10
+
+    - name: Display deployment status
+      debug:
+        msg: |
+          HA Load Balancer deployment completed successfully!
+          Virtual IP: {{ virtual_ip }}
+          Access URL: http://{{ virtual_ip }}
+          Stats URL: http://{{ groups['loadbalancers'][0] }}:8404/stats

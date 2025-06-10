@@ -1,0 +1,16 @@
+---
+webserver_port: 8888
+apache_document_root: "/var/www/ha-webserver"
+apache_log_level: "warn"
+
+# Apache Configuration
+apache_modules:
+  - rewrite
+  - ssl
+  - headers
+
+# Content Configuration
+server_banner: "HA Web Server"
+custom_headers:
+  - "X-Served-By: {{ inventory_hostname }}"
+  - "X-Load-Balanced: true"

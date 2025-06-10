@@ -1,0 +1,19 @@
+---
+# Network Configuration
+virtual_ip: "192.168.1.100"
+network_interface: "{{ ansible_default_ipv4.interface }}"
+
+# Authentication
+ansible_user: ubuntu
+ansible_ssh_private_key_file: ~/.ssh/id_rsa
+ansible_become: yes
+
+# Common Settings
+timezone: "UTC"
+ntp_servers:
+  - 0.pool.ntp.org
+  - 1.pool.ntp.org
+
+# Monitoring
+enable_monitoring: true
+log_level: "info"

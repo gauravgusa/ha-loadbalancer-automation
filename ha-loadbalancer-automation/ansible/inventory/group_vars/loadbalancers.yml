@@ -1,0 +1,22 @@
+---
+# HAProxy Configuration
+haproxy_stats_port: 8404
+haproxy_stats_uri: "/stats"
+haproxy_stats_user: "admin"
+haproxy_stats_password: "secure123!"
+
+# Load Balancing Algorithm
+lb_algorithm: "roundrobin"
+health_check_interval: 2000
+health_check_rise: 2
+health_check_fall: 3
+
+# Keepalived Configuration
+vrrp_router_id: 51
+vrrp_auth_password: "mypassword123"
+vrrp_advertisement_interval: 1
+
+# SSL Configuration (optional)
+enable_ssl: false
+ssl_certificate_path: "/etc/ssl/certs/server.crt"
+ssl_private_key_path: "/etc/ssl/private/server.key"

@@ -1,0 +1,5 @@
+# Ports configuration for Apache
+Listen {{ webserver_port }}
+{% if enable_ssl %}
+Listen 443 ssl
+{% endif %}

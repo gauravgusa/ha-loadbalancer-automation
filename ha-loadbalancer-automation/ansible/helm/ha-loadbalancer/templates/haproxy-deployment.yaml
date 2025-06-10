@@ -1,0 +1,53 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "ha-loadbalancer.fullname" . }}-haproxy
+  namespace: {{ .Values.global.namespace }}
+  labels:
+    {{- include "ha-loadbalancer.labels" . | nindent 4 }}
+    component: haproxy
+spec:
+  replicas: {{ .Values.haproxy.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "ha-loadbalancer.selectorLabels" . | nindent 6 }}
+      component: haproxy
+  template:
+    metadata:
+      labels:
+        {{- include "ha-loadbalancer.selectorLabels" . | nindent 8 }}
+        component: haproxy
+    spec:
+      containers:
+      - name: haproxy
+        image: "{{ .Values.haproxy.image.repository }}:{{ .Values.haproxy.image.tag }}"
+        imagePullPolicy: {{ .Values.haproxy.image.pullPolicy }}
+        ports:
+        - name: http
+          containerPort: 80
+          protocol: TCP
+        - name: stats
+          containerPort: {{ .Values.haproxy.config.stats.port }}
+          protocol: TCP
+        livenessProbe:
+          httpGet:
+            path: {{ .Values.haproxy.config.stats.uri }}
+            port: stats
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: {{ .Values.haproxy.config.stats.uri }}
+            port: stats
+          initialDelaySeconds: 5
+          periodSeconds: 5
+        volumeMounts:
+        - name: haproxy-config
+          mountPath: /usr/local/etc/haproxy/haproxy.cfg
+          subPath: haproxy.cfg
+        resources:
+          {{- toYaml .Values.haproxy.resources | nindent 10 }}
+      volumes:
+      - name: haproxy-config
+        configMap:
+          name: {{ include "ha-loadbalancer.fullname" . }}-haproxy-config

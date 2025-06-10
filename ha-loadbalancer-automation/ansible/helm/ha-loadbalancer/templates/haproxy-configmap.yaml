@@ -1,0 +1,42 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "ha-loadbalancer.fullname" . }}-haproxy-config
+  namespace: {{ .Values.global.namespace }}
+  labels:
+    {{- include "ha-loadbalancer.labels" . | nindent 4 }}
+data:
+  haproxy.cfg: |
+    global
+        daemon
+        stats socket /var/run/haproxy/admin.sock mode 660 level admin
+        stats timeout 30s
+        
+    defaults
+        mode http
+        timeout connect 5000ms
+        timeout client 50000ms
+        timeout server 50000ms
+        option httplog
+        option dontlognull
+        retries 3
+        
+    listen stats
+        bind *:{{ .Values.haproxy.config.stats.port }}
+        stats enable
+        stats uri {{ .Values.haproxy.config.stats.uri }}
+        stats refresh 30s
+        {{- if .Values.haproxy.config.stats.user }}
+        stats auth {{ .Values.haproxy.config.stats.user }}:{{ .Values.haproxy.config.stats.password }}
+        {{- end }}
+        
+    frontend web_frontend
+        bind *:80
+        default_backend web_servers
+        
+    backend web_servers
+        balance {{ .Values.haproxy.config.backend.algorithm }}
+        option httpchk GET /health
+        {{- range $i := until (int .Values.webserver.replicaCount) }}
+        server web{{ $i }} {{ include "ha-loadbalancer.fullname" $ }}-webserver:{{ $.Values.webserver.service.port }} check inter {{ $.Values.haproxy.config.backend.healthCheck.interval }} rise {{ $.Values.haproxy.config.backend.healthCheck.rise }} fall {{ $.Values.haproxy.config.backend.healthCheck.fall }}
+        {{- end }}

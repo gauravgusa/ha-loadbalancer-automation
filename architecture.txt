@@ -1,0 +1,43 @@
+HA Load Balancer Automation Package
+This package provides complete automation for setting up HAProxy + Keepalived High Availability Load Balancer with Apache web servers using Ansible, Kubernetes Helm charts, and installation scripts.
+Package Structure
+ha-loadbalancer-automation/
+├── ansible/
+│   ├── playbooks/
+│   │   ├── site.yml
+│   │   ├── webservers.yml
+│   │   └── loadbalancers.yml
+│   ├── inventory/
+│   │   ├── hosts.yml
+│   │   └── group_vars/
+│   │       ├── all.yml
+│   │       ├── webservers.yml
+│   │       └── loadbalancers.yml
+│   ├── roles/
+│   │   ├── apache-webserver/
+│   │   ├── haproxy/
+│   │   ├── keepalived/
+│   │   └── firewall/
+│   └── templates/
+├── helm/
+│   ├── ha-loadbalancer/
+│   │   ├── Chart.yaml
+│   │   ├── values.yaml
+│   │   └── templates/
+│   └── webserver/
+│       ├── Chart.yaml
+│       ├── values.yaml
+│       └── templates/
+├── scripts/
+│   ├── install.sh
+│   ├── configure.sh
+│   ├── test.sh
+│   └── uninstall.sh
+├── config/
+│   └── environment.conf
+└── docs/
+    ├── README.md
+    ├── INSTALLATION.md
+    └── TROUBLESHOOTING.md
+
+

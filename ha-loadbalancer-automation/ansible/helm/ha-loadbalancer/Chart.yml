@@ -1,0 +1,103 @@
+apiVersion: v2
+name: ha-loadbalancer
+description: High Availability Load Balancer with HAProxy and Keepalived
+type: application
+version: 1.0.0
+appVersion: "1.0.0"
+maintainers:
+  - name: DevOps Team
+    email: devops@company.com
+sources:
+  - https://github.com/company/ha-loadbalancer
+keywords:
+  - haproxy
+  - keepalived
+  - load-balancer
+  - high-availability
+
+yaml# helm/ha-loadbalancer/values.yaml
+# Global Configuration
+global:
+  namespace: ha-loadbalancer
+  labels:
+    app: ha-loadbalancer
+    version: v1.0.0
+
+# HAProxy Configuration
+haproxy:
+  replicaCount: 2
+  image:
+    repository: haproxy
+    tag: "2.8-alpine"
+    pullPolicy: IfNotPresent
+  
+  service:
+    type: LoadBalancer
+    port: 80
+    targetPort: 80
+    annotations: {}
+  
+  config:
+    stats:
+      enabled: true
+      port: 8404
+      uri: /stats
+      user: admin
+      password: secure123!
+    
+    backend:
+      algorithm: roundrobin
+      healthCheck:
+        interval: 2000
+        rise: 2
+        fall: 3
+
+# Web Server Configuration
+webserver:
+  replicaCount: 3
+  image:
+    repository: httpd
+    tag: "2.4-alpine"
+    pullPolicy: IfNotPresent
+  
+  service:
+    type: ClusterIP
+    port: 8888
+    targetPort: 80
+  
+  resources:
+    limits:
+      cpu: 500m
+      memory: 512Mi
+    requests:
+      cpu: 250m
+      memory: 256Mi
+
+# Ingress Configuration
+ingress:
+  enabled: true
+  className: "nginx"
+  annotations:
+    nginx.ingress.kubernetes.io/rewrite-target: /
+  hosts:
+    - host: ha-loadbalancer.local
+      paths:
+        - path: /
+          pathType: Prefix
+  tls: []
+
+# Monitoring
+monitoring:
+  enabled: true
+  serviceMonitor:
+    enabled: true
+    interval: 30s
+    scrapeTimeout: 10s
+
+# Autoscaling
+autoscaling:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 80
+  targetMemoryUtilizationPercentage: 80

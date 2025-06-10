@@ -1,0 +1,106 @@
+global
+    daemon
+    chroot /var/lib/haproxy
+    stats socket /run/haproxy/admin.sock mode 660 level admin
+    stats timeout 30s
+    user haproxy
+    group haproxy
+    
+    # Logging
+    log stdout local0 {{ log_level }}
+    
+    # SSL Configuration
+    {% if enable_ssl %}
+    ca-base /etc/ssl/certs
+    crt-base /etc/ssl/private
+    ssl-default-bind-ciphers ECDHE+AESGCM:ECDHE+CHACHA20:DHE+AESGCM:DHE+CHACHA20:!aNULL:!MD5:!DSS
+    ssl-default-bind-options ssl-min-ver TLSv1.2 no-tls-tickets
+    {% endif %}
+
+defaults
+    mode http
+    timeout connect 5000ms
+    timeout client 50000ms
+    timeout server 50000ms
+    option httplog
+    option dontlognull
+    option redispatch
+    retries 3
+    maxconn 2000
+    option httpchk GET /health
+
+# Statistics
+listen stats
+    bind *:{{ haproxy_stats_port }}
+    stats enable
+    stats uri {{ haproxy_stats_uri }}
+    stats refresh 30s
+    stats admin if TRUE
+    {% if haproxy_stats_user is defined %}
+    stats auth {{ haproxy_stats_user }}:{{ haproxy_stats_password }}
+    {% endif %}
+
+# Frontend
+frontend web_frontend
+    bind {{ virtual_ip }}:80
+    {% if enable_ssl %}
+    bind {{ virtual_ip }}:443 ssl crt {{ ssl_certificate_path }}
+    redirect scheme https if !{ ssl_fc }
+    {% endif %}
+    
+    default_backend web_servers
+    
+    # Headers
+    capture request header Host len 32
+    capture response header Content-Length len 10
+
+# Backend
+backend web_servers
+    balance {{ lb_algorithm }}
+    option httpchk GET /health
+    
+    {% for host in groups['webservers'] %}
+    server {{ host }} {{ hostvars[host]['ansible_host'] }}:{{ webserver_port }} check inter {{ health_check_interval }} rise {{ health_check_rise }} fall {{ health_check_fall }}
+    {% endfor %}
+# ansible/templates/keepalived.conf.j2
+global_defs {
+    router_id {{ inventory_hostname }}
+    script_user root
+    enable_script_security
+}
+
+vrrp_script chk_haproxy {
+    script "/bin/curl -f http://localhost:{{ haproxy_stats_port }}{{ haproxy_stats_uri }} || exit 1"
+    interval {{ health_check_interval | int // 1000 }}
+    weight -2
+    fall {{ health_check_fall }}
+    rise {{ health_check_rise }}
+}
+
+vrrp_instance VI_1 {
+    state {{ keepalived_state }}
+    interface {{ network_interface }}
+    virtual_router_id {{ vrrp_router_id }}
+    priority {{ keepalived_priority }}
+    advert_int {{ vrrp_advertisement_interval }}
+    
+    authentication {
+        auth_type PASS
+        auth_pass {{ vrrp_auth_password }}
+    }
+    
+    virtual_ipaddress {
+        {{ virtual_ip }}/24
+    }
+    
+    track_script {
+        chk_haproxy
+    }
+    
+    {% if keepalived_state == 'MASTER' %}
+    notify_master "/bin/echo 'Became MASTER' | logger"
+    {% else %}
+    notify_backup "/bin/echo 'Became BACKUP' | logger"
+    {% endif %}
+    notify_fault "/bin/echo 'Fault detected' | logger"
+}

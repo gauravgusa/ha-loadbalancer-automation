@@ -1,0 +1,92 @@
+---
+- name: Configure Apache Web Servers
+  hosts: webservers
+  become: yes
+  vars:
+    apache_port: "{{ webserver_port | default(8888) }}"
+    
+  tasks:
+    - name: Update system packages
+      apt:
+        update_cache: yes
+        upgrade: dist
+        cache_valid_time: 3600
+
+    - name: Install Apache2
+      apt:
+        name: apache2
+        state: present
+
+    - name: Configure Apache ports
+      template:
+        src: ports.conf.j2
+        dest: /etc/apache2/ports.conf
+        backup: yes
+      notify: restart apache2
+
+    - name: Create custom Apache site configuration
+      template:
+        src: apache-site.conf.j2
+        dest: "/etc/apache2/sites-available/ha-webserver-{{ apache_port }}.conf"
+        backup: yes
+      notify: restart apache2
+
+    - name: Disable default Apache sites
+      apache2_module:
+        name: "{{ item }}"
+        state: absent
+      loop:
+        - default
+        - 000-default
+      ignore_errors: yes
+
+    - name: Enable custom Apache site
+      apache2_module:
+        name: "ha-webserver-{{ apache_port }}"
+        state: present
+      notify: restart apache2
+
+    - name: Create web content directory
+      file:
+        path: /var/www/ha-webserver
+        state: directory
+        owner: www-data
+        group: www-data
+        mode: '0755'
+
+    - name: Generate unique web server content
+      template:
+        src: index.html.j2
+        dest: /var/www/ha-webserver/index.html
+        owner: www-data
+        group: www-data
+        mode: '0644'
+
+    - name: Configure firewall for web servers
+      ufw:
+        rule: allow
+        port: "{{ apache_port }}"
+        from_ip: "{{ item }}"
+      loop: "{{ groups['loadbalancers'] }}"
+
+    - name: Allow SSH through firewall
+      ufw:
+        rule: allow
+        port: '22'
+
+    - name: Enable firewall
+      ufw:
+        state: enabled
+        policy: deny
+
+    - name: Start and enable Apache2
+      systemd:
+        name: apache2
+        state: started
+        enabled: yes
+
+  handlers:
+    - name: restart apache2
+      systemd:
+        name: apache2
+        state: restarted
