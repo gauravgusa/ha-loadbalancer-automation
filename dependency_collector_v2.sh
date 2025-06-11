@@ -27,7 +27,6 @@ ESSENTIAL_BUILD_PACKAGES=(
     "build-essential" "gcc" "g++" "make" "libc6-dev" "linux-libc-dev"
     "binutils" "cpp" "gcc-11" "g++-11" "libc-dev-bin" "libgcc-s1" "libstdc++6"
 )
-
 CRYPTO_SSL_PACKAGES=("libssl-dev" "libssl3" "openssl" "ca-certificates")
 COMPRESSION_PACKAGES=("zlib1g-dev" "zlib1g" "liblzma-dev" "liblzma5")
 REGEX_PACKAGES=("libpcre3-dev" "libpcre3" "libpcre2-dev" "libpcre2-8-0")
