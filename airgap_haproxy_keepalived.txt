@@ -24,7 +24,6 @@ wget http://www.haproxy.org/download/2.8/src/haproxy-2.8.3.tar.gz -O source_file
 Add the HAProxy repository and download the .deb package with dependencies:
 
 sudo apt update
-sudo apt update
 sudo apt install -y software-properties-common
 sudo add-apt-repository ppa:vbernat/haproxy-2.8 -y
 sudo apt update
@@ -38,6 +37,10 @@ Download all dependencies:
 
 apt-cache depends haproxy | grep Depends | awk '{print $2}' | xargs apt download
 mv *.deb deb_files/
+
+sudo apt install -y apt-rdepends
+apt-rdepends haproxy libopentracing-c-wrapper0 libpcre3-dev | grep -v "^ " | sort -u | xargs apt download
+mv *.deb ~/airgap_haproxy_keepalived/deb_files/
 
 1.3 Download Keepalived
 1.3.1 Source (.tar.gz):
@@ -184,7 +187,7 @@ set -e
 # Define variables
 HAPROXY_SRC="haproxy-2.8.3"
 KEEPALIVED_SRC="keepalived-2.2.8"
-INSTALL_DIR="/root/airgap_install"
+INSTALL_DIR="/opt/airgap_install"
 CONFIG_DIR="/etc"
 NETWORK_INTERFACE="eth0"
 VIP="192.168.1.100"
@@ -201,11 +204,20 @@ fi
 mkdir -p "$INSTALL_DIR"
 cd "$INSTALL_DIR"
 
-# Step 1: Install .deb dependencies
+# Step 1: Install .deb dependencies with error handling
 echo "Installing .deb dependencies..."
 if [ -d "deb_files" ]; then
-    dpkg -i deb_files/*.deb || true  # Ignore dependency errors, resolve later
-    dpkg --configure -a  # Fix any dependency issues
+    # Install dependencies in batches to handle dependency order
+    for deb in deb_files/*.deb; do
+        echo "Installing $deb..."
+        dpkg -i "$deb" || true  # Continue on errors
+    done
+    # Fix any dependency issues
+    dpkg --configure -a
+    # Attempt to resolve missing dependencies
+    for deb in deb_files/*.deb; do
+        dpkg -i "$deb" || true
+    done
 else
     echo "Error: deb_files directory not found!"
     exit 1
