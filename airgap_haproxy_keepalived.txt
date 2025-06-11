@@ -18,7 +18,8 @@ mkdir deb_files source_files config_files
 1.2.1 Source (.tar.gz):
 Download HAProxy 2.8.3 (or the latest version from http://www.haproxy.org/):
 
-wget http://www.haproxy.org/download/2.8/src/haproxy-2.8.3.tar.gz -O source_files/haproxy-2.8.3.tar.gz
+#wget http://www.haproxy.org/download/2.8/src/haproxy-2.8.3.tar.gz -O source_files/haproxy-2.8.3.tar.gz
+wget https://github.com/acassen/keepalived/releases/tag/v.2.2.8/v2.2.8.tar.gz -O source_files/haproxy-2.8.3.tar.gz
 
 1.2.2 Debian Package (.deb):
 Add the HAProxy repository and download the .deb package with dependencies:
