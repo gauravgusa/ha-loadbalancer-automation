@@ -46,7 +46,7 @@ mv *.deb ~/airgap_haproxy_keepalived/deb_files/
 1.3.1 Source (.tar.gz):
 Download Keepalived 2.2.8 (or the latest from http://www.keepalived.org/):
 #wget http://www.keepalived.org/software/keepalived-2.2.8.tar.gz -O source_files/keepalived-2.2.8.tar.gz
-wget https://github.com/acassen/keepalived/releases/tag/v.2.2.8/v2.2.8.tar.gz -O source_files/keepalived-2.2.8.tar.gz
+wget https://github.com/acassen/keepalived/releases/tag/v2.2.8/v2.2.8.tar.gz -O source_files/keepalived-2.2.8.tar.gz
 
 1.3.2 Debian Package (.deb):
 Download Keepalived and its dependencies:
