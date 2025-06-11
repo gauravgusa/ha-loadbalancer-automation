@@ -24,9 +24,9 @@ wget http://www.haproxy.org/download/2.8/src/haproxy-2.8.3.tar.gz -O source_file
 Add the HAProxy repository and download the .deb package with dependencies:
 
 sudo apt update
+sudo apt update
 sudo apt install -y software-properties-common
-curl https://haproxy.debian.net/bernat.debian.org.gpg | sudo gpg --dearmor -o /usr/share/keyrings/haproxy.debian.net.gpg
-echo "deb [signed-by=/usr/share/keyrings/haproxy.debian.net.gpg] http://haproxy.debian.net jammy-backports main" | sudo tee /etc/apt/sources.list.d/haproxy.list
+sudo add-apt-repository ppa:vbernat/haproxy-2.8 -y
 sudo apt update
 apt download haproxy=2.8.\*
 mv haproxy_*.deb deb_files/
