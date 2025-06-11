@@ -1,0 +1,421 @@
+To set up HAProxy and Keepalived in an air-gapped Debian-based system (e.g., Ubuntu 20.04 or Debian 11) using .tar.gz and .deb files,
+with the final deliverable being a single .tar.gz file containing all necessary packages and a bootstrap.sh script to install
+and configure both tools, we’ll follow these steps. 
+The process involves preparing all files on an internet-connected machine, 
+creating a bootstrap.sh script to automate installation on the air-gapped servers, and packaging everything into a .tar.gz archive. 
+The setup will configure a high-availability load balancer with a Virtual IP (VIP) using Keepalived.
+
+Step 1: Prepare Files on an Internet-Connected Machine
+On a machine with internet access (same OS as the air-gapped servers, e.g., Ubuntu 20.04), 
+download all required .tar.gz source files, .deb packages, their dependencies, and create the bootstrap.sh script.
+
+1.1 Create a Working Directory
+mkdir -p ~/airgap_haproxy_keepalived
+cd ~/airgap_haproxy_keepalived
+mkdir deb_files source_files config_files
+
+1.2 Download HAProxy
+1.2.1 Source (.tar.gz):
+Download HAProxy 2.8.3 (or the latest version from http://www.haproxy.org/):
+
+wget http://www.haproxy.org/download/2.8/src/haproxy-2.8.3.tar.gz -O source_files/haproxy-2.8.3.tar.gz
+
+1.2.2 Debian Package (.deb):
+Add the HAProxy repository and download the .deb package with dependencies:
+
+sudo apt update
+sudo apt install -y software-properties-common
+curl https://haproxy.debian.net/haproxy-archive-keyring.gpg -o /usr/share/keyrings/haproxy-archive-keyring.gpg
+echo "deb [signed-by=/usr/share/keyrings/haproxy-archive-keyring.gpg] http://haproxy.debian.net focal-backports-2.8 main" | sudo tee /etc/apt/sources.list.d/haproxy.list
+sudo apt update
+apt download haproxy=2.8.\*
+mv haproxy_*.deb deb_files/
+
+Notes : Replace focal with your OS codename (e.g., bullseye for Debian 11).
+
+1.2.3 Dependencies for HAProxy:
+Download all dependencies:
+
+apt-cache depends haproxy | grep Depends | awk '{print $2}' | xargs apt download
+mv *.deb deb_files/
+
+1.3 Download Keepalived
+1.3.1 Source (.tar.gz):
+Download Keepalived 2.2.8 (or the latest from http://www.keepalived.org/):
+wget http://www.keepalived.org/software/keepalived-2.2.8.tar.gz -O source_files/keepalived-2.2.8.tar.gz
+
+1.3.2 Debian Package (.deb):
+Download Keepalived and its dependencies:
+apt download keepalived
+mv keepalived_*.deb deb_files/
+apt-cache depends keepalived | grep Depends | awk '{print $2}' | xargs apt download
+mv *.deb deb_files/
+
+1.4 Download Compilation Tools and Dependencies
+For compiling HAProxy and Keepalived from .tar.gz, download build-essential and other required libraries:
+apt download build-essential gcc make libc6-dev libssl-dev libnl-3-dev libnl-genl-3-dev libpcre3-dev zlib1g-dev
+mv *.deb deb_files/
+
+1.4.1 Use apt-rdepends to capture recursive dependencies:
+
+sudo apt install -y apt-rdepends
+apt-rdepends build-essential gcc make libc6-dev libssl-dev libnl-3-dev libnl-genl-3-dev libpcre3-dev zlib1g-dev | grep -v "^ " | sort -u | xargs apt download
+mv *.deb deb_files/
+
+1.5 Create Configuration Files
+Create configuration files for HAProxy and Keepalived in config_files/. These will be copied to the air-gapped servers.
+
+1.5.1 HAProxy Configuration (haproxy.cfg):
+Create a basic load balancer configuration for two backend web servers:
+
+nano config_files/haproxy.cfg
+Add:
+
+global
+    log /dev/log local0
+    maxconn 4096
+    user haproxy
+    group haproxy
+    daemon
+
+defaults
+    log global
+    mode http
+    option httplog
+    option dontlognull
+    timeout connect 5000
+    timeout client 50000
+    timeout server 50000
+
+frontend http_front
+    bind *:80
+    stats uri /haproxy?stats
+    default_backend web_backend
+
+backend web_backend
+    balance roundrobin
+    server server1 192.168.1.10:80 check
+    server server2 192.168.1.11:80 check
+
+1.5.2 Keepalived Configurations:
+Create separate configurations for LB1 (Master) and LB2 (Backup).
+
+1.5.2.1 For LB1 (keepalived_master.conf):
+nano config_files/keepalived_master.conf
+Add
+
+global_defs {
+    router_id HA_01
+}
+
+vrrp_script chk_haproxy {
+    script "killall -0 haproxy"
+    interval 1
+    rise 3
+    fall 3
+    weight 2
+}
+
+vrrp_instance VI_1 {
+    state MASTER
+    interface eth0
+    virtual_router_id 51
+    priority 110
+    advert_int 1
+    authentication {
+        auth_type PASS
+        auth_pass test123
+    }
+    virtual_ipaddress {
+        192.168.1.100
+    }
+    track_script {
+        chk_haproxy
+    }
+}
+
+1.5.2.2 For LB2 (keepalived_backup.conf):
+nano config_files/keepalived_backup.conf
+
+global_defs {
+    router_id HA_02
+}
+
+vrrp_script chk_haproxy {
+    script "killall -0 haproxy"
+    interval 1
+    rise 3
+    fall 3
+    weight 2
+}
+
+vrrp_instance VI_1 {
+    state BACKUP
+    interface eth0
+    virtual_router_id 51
+    priority 100
+    advert_int 1
+    authentication {
+        auth_type PASS
+        auth_pass test123
+    }
+    virtual_ipaddress {
+        192.168.1.100
+    }
+    track_script {
+        chk_haproxy
+    }
+}
+
+1.6 Create bootstrap.sh
+1.6.1 Create a bootstrap.sh script to automate installation and configuration on the air-gapped servers. The script will:
+
+Install .deb dependencies.
+Compile and install HAProxy and Keepalived from .tar.gz.
+Set up configuration files and system settings.
+Start services.
+
+nano bootstrap.sh
+#!/bin/bash
+
+# Exit on any error
+set -e
+
+# Define variables
+HAPROXY_SRC="haproxy-2.8.3"
+KEEPALIVED_SRC="keepalived-2.2.8"
+INSTALL_DIR="/root/airgap_install"
+CONFIG_DIR="/etc"
+NETWORK_INTERFACE="eth0"
+VIP="192.168.1.100"
+SERVER_ROLE="$1"  # Expect "master" or "backup" as argument
+
+# Check if role is provided
+if [ -z "$SERVER_ROLE" ]; then
+    echo "Error: Please specify server role ('master' or 'backup')"
+    echo "Usage: $0 [master|backup]"
+    exit 1
+fi
+
+# Create installation directory
+mkdir -p "$INSTALL_DIR"
+cd "$INSTALL_DIR"
+
+# Step 1: Install .deb dependencies
+echo "Installing .deb dependencies..."
+if [ -d "deb_files" ]; then
+    dpkg -i deb_files/*.deb || true  # Ignore dependency errors, resolve later
+    dpkg --configure -a  # Fix any dependency issues
+else
+    echo "Error: deb_files directory not found!"
+    exit 1
+fi
+
+# Step 2: Install HAProxy from .tar.gz
+echo "Installing HAProxy from source..."
+if [ -f "source_files/$HAPROXY_SRC.tar.gz" ]; then
+    tar xvfz source_files/$HAPROXY_SRC.tar.gz
+    cd "$HAPROXY_SRC"
+    make TARGET=linux-glibc USE_OPENSSL=1
+    make install
+    cd ..
+    mkdir -p /etc/haproxy /var/lib/haproxy
+    touch /var/lib/haproxy/stats
+    ln -sf /usr/local/sbin/haproxy /usr/sbin/haproxy
+else
+    echo "Error: HAProxy source file not found!"
+    exit 1
+fi
+
+# Step 3: Install Keepalived from .tar.gz
+echo "Installing Keepalived from source..."
+if [ -f "source_files/$KEEPALIVED_SRC.tar.gz" ]; then
+    tar xvfz source_files/$KEEPALIVED_SRC.tar.gz
+    cd "$KEEPALIVED_SRC"
+    ./configure
+    make
+    make install
+    cd ..
+    mkdir -p /etc/keepalived
+else
+    echo "Error: Keepalived source file not found!"
+    exit 1
+fi
+
+# Step 4: Copy HAProxy configuration
+echo "Setting up HAProxy configuration..."
+if [ -f "config_files/haproxy.cfg" ]; then
+    cp config_files/haproxy.cfg /etc/haproxy/haproxy.cfg
+else
+    echo "Error: HAProxy configuration file not found!"
+    exit 1
+fi
+
+# Step 5: Copy Keepalived configuration based on role
+echo "Setting up Keepalived configuration..."
+if [ "$SERVER_ROLE" = "master" ] && [ -f "config_files/keepalived_master.conf" ]; then
+    cp config_files/keepalived_master.conf /etc/keepalived/keepalived.conf
+elif [ "$SERVER_ROLE" = "backup" ] && [ -f "config_files/keepalived_backup.conf" ]; then
+    cp config_files/keepalived_backup.conf /etc/keepalived/keepalived.conf
+else
+    echo "Error: Invalid role or Keepalived configuration file not found!"
+    exit 1
+fi
+
+# Step 6: Configure system settings
+echo "Configuring system settings..."
+echo "net.ipv4.ip_forward=1" >> /etc/sysctl.conf
+echo "net.ipv4.ip_nonlocal_bind=1" >> /etc/sysctl.conf
+sysctl -p
+
+# Step 7: Create HAProxy systemd service
+echo "Creating HAProxy systemd service..."
+cat > /etc/systemd/system/haproxy.service <<EOF
+[Unit]
+Description=HAProxy Load Balancer
+After=network.target
+
+[Service]
+ExecStart=/usr/local/sbin/haproxy -f /etc/haproxy/haproxy.cfg
+ExecReload=/bin/kill -HUP \$MAINPID
+KillMode=mixed
+Restart=always
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+# Step 8: Create Keepalived systemd service
+echo "Creating Keepalived systemd service..."
+cat > /etc/systemd/system/keepalived.service <<EOF
+[Unit]
+Description=Keepalived High Availability
+After=network.target
+
+[Service]
+ExecStart=/usr/local/sbin/keepalived --dont-fork
+ExecReload=/bin/kill -HUP \$MAINPID
+KillMode=process
+Restart=always
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+# Step 9: Enable and start services
+echo "Starting services..."
+systemctl daemon-reload
+systemctl enable haproxy
+systemctl start haproxy
+systemctl enable keepalived
+systemctl start keepalived
+
+# Step 10: Verify installation
+echo "Verifying installations..."
+haproxy -v
+keepalived --version
+echo "Setup complete! HAProxy and Keepalived are running."
+echo "Access HAProxy stats at http://$VIP/haproxy?stats"
+
+1.6.2 Make the script executable:
+chmod +x bootstrap.sh
+
+1.7 Package Everything into a .tar.gz
+Create a single .tar.gz file containing all files:
+
+cd ~/airgap_haproxy_keepalived
+tar -czf airgap_haproxy_keepalived.tar.gz bootstrap.sh deb_files/ source_files/ config_files/
+
+1.8 Transfer to USB Drive
+sudo mkdir /media/$USER/usb_drive
+sudo cp airgap_haproxy_keepalived.tar.gz /media/$USER/usb_drive/
+
+Step 2: Install on Air-Gapped Servers
+On both air-gapped servers (LB1 and LB2), perform the following steps.
+
+2.1 Mount USB Drive
+sudo mkdir /mnt/usb
+sudo mount /dev/sdX1 /mnt/usb
+cd /mnt/usb
+
+Replace /dev/sdX1 with the USB drive’s device name (check with lsblk).
+
+2.2 Extract the .tar.gz
+sudo mkdir /root/airgap_install
+sudo cp airgap_haproxy_keepalived.tar.gz /root/airgap_install/
+cd /root/airgap_install
+tar xvfz airgap_haproxy_keepalived.tar.gz
+
+2.3 Run bootstrap.sh
+Run the script with the appropriate role (master for LB1, backup for LB2):
+On LB1
+
+cd /root/airgap_install
+sudo ./bootstrap.sh master
+
+On LB2:
+
+cd /root/airgap_install
+sudo ./bootstrap.sh backup
+
+The script will:
+
+Install all .deb dependencies.
+Compile and install HAProxy and Keepalived from .tar.gz.
+Copy configuration files to /etc/haproxy/ and /etc/keepalived/.
+Configure system settings (IP forwarding, non-local binding).
+Set up and start systemd services for HAProxy and Keepalived.
+Verify the installations.
+
+2.4 Unmount USB
+cd ~
+sudo umount /mnt/usb
+
+Step 3: Test the Setup
+Since the servers are air-gapped, testing requires local access or a connected client device.
+
+2.4.1 Verify HAProxy: On LB1 or LB2, check the HAProxy stats page
+curl http://localhost/haproxy?stats
+Ensure backend servers (192.168.1.10 and 192.168.1.11) are listed and accessible.
+
+2.4.2 Test Failover:
+Stop HAProxy on LB1:
+sudo systemctl stop haproxy
+
+On LB2, verify the VIP is active:
+ip a show eth0
+The VIP (192.168.1.100) should appear.
+
+Use a client to access http://192.168.1.100 to confirm traffic reaches backend servers.
+
+3. Check Service Status:
+
+sudo systemctl status haproxy
+sudo systemctl status keepalived
+
+
+
+Notes
+Customization:
+Update haproxy.cfg in config_files/ with your backend server IPs (replace 192.168.1.10 and 192.168.1.11).
+Update keepalived_master.conf and keepalived_backup.conf with your network interface (replace eth0) and VIP (replace 192.168.1.100).
+If SSL is needed, include SSL certificates in config_files/ and modify haproxy.cfg (e.g., bind *:443 ssl crt /etc/haproxy/cert.pem).
+Dependencies: Ensure all .deb files in deb_files/ cover dependencies for build-essential, libssl-dev, libnl-3-dev, libnl-genl-3-dev, libpcre3-dev, and zlib1g-dev. If errors occur, recheck apt-rdepends output.
+Firewall: If a firewall is active, allow ports 80, 443 (for SSL), and VRRP protocol (112) using iptables or ufw.
+Error Handling: The bootstrap.sh script includes basic error checks. If .deb installations fail, run dpkg --configure -a manually. If compilation fails, verify all dependencies are installed.
+Backup: Save /etc/haproxy/ and /etc/keepalived/ to the USB drive after setup for backups.
+The final deliverable is airgap_haproxy_keepalived.tar.gz, which contains:
+
+bootstrap.sh: The automation script.
+deb_files/: All .deb packages for dependencies.
+source_files/: HAProxy and Keepalived .tar.gz source files.
+config_files/: Configuration files for HAProxy and Keepalived.
+
+
+
+
+
+
+
+
+
