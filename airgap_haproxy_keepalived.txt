@@ -354,7 +354,7 @@ cd /mnt/usb
 Replace /dev/sdX1 with the USB drive’s device name (check with lsblk).
 
 2.2 Extract the .tar.gz
-sudo mkdir /root/airgap_install
+sudo mkdir /opt/airgap_install
 sudo cp airgap_haproxy_keepalived.tar.gz /opt/airgap_install/
 cd /opt/airgap_install
 tar xvfz airgap_haproxy_keepalived.tar.gz
@@ -397,7 +397,7 @@ sudo systemctl stop haproxy
 
 On LB2, verify the VIP is active:
 ip a show eth0
-The VIP (192.168.1.100) should appear.
+The VIP (10.102.71.190) should appear.
 
 Use a client to access http://192.168.1.100 to confirm traffic reaches backend servers.
 
