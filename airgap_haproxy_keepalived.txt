@@ -462,7 +462,69 @@ echo "---------------------------------------------------------------------"
 echo "All available .deb files have been downloaded to the 'deb_files' directory."
 echo "Note: Some packages might already be at their latest version or not available for direct download via 'apt-get download'."
 
+**
+#!/bin/bash
 
+# Define the target applications whose dependencies we want to download
+TARGET_APPLICATIONS=("haproxy" "keepalived")
+
+# Create the deb_files directory if it doesn't exist
+mkdir -p deb_files
+
+# Check if apt-rdepends is installed
+if ! command -v apt-rdepends &> /dev/null; then
+    echo "Error: apt-rdepends is not installed."
+    echo "Please install it using: sudo apt-get install apt-rdepends"
+    exit 1
+fi
+
+echo "Starting dependency download process for: ${TARGET_APPLICATIONS[@]}"
+echo "---------------------------------------------------------------------"
+
+# Loop through each target application
+for app_name in "${TARGET_APPLICATIONS[@]}"; do
+    echo ""
+    echo "*********************************************************************"
+    echo "Processing dependencies for application: $app_name"
+    echo "*********************************************************************"
+
+    # Get the list of the current application's dependencies
+    # We use '2>/dev/null' to suppress potential errors from apt-rdepends
+    # and 'grep -v "^ "' to get only package names.
+    PACKAGES=$(apt-rdepends "$app_name" 2>/dev/null | grep -v "^ ")
+
+    if [ -z "$PACKAGES" ]; then
+        echo "Warning: Could not retrieve dependencies for '$app_name'. It might not be available or apt-rdepends encountered an issue."
+        continue # Skip to the next application
+    fi
+
+    echo "Found dependencies for '$app_name':"
+    echo "$PACKAGES"
+    echo "--- Attempting to download .deb files ---"
+
+    # Iterate through the dependencies of the current application
+    for package in $PACKAGES; do
+        echo "  Processing package: $package"
+        # Attempt to download the .deb file into deb_files folder
+        # -d: Only download, do not install or unpack.
+        # -o: Specify output directory.
+        # We redirect stdout and stderr to /dev/null for cleaner output on success.
+        if apt-get download -d -o=./deb_files "$package" >/dev/null 2>&1; then
+            echo "    Successfully downloaded $package"
+        else
+            echo "    Warning: Could not download $package. Skipping."
+        fi
+    done
+
+    echo "Finished processing dependencies for: $app_name"
+    echo "---------------------------------------------------------------------"
+done
+
+echo ""
+echo "#####################################################################"
+echo "All available .deb files have been downloaded to the 'deb_files' directory."
+echo "Note: Some packages might already be at their latest version, not available for direct download via 'apt-get download', or previously downloaded."
+echo "#####################################################################"
 
 
 
