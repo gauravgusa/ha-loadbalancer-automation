@@ -1,0 +1,29 @@
+Option 1: Use apt-rdepends and apt download
+1. Install apt-rdepends if not already present:
+sudo apt-get install apt-rdepends
+
+2. Download HAProxy and all its dependencies:
+apt download $(apt-rdepends haproxy | grep -v "^ ")
+
+This command lists all dependencies (recursively) and downloads each .deb file into your current directory, whether or not they are already installed.
+
+Option 2: Force Re-download with apt-get
+To force apt-get to re-download packages (including dependencies), you can combine cache cleaning and the --reinstall flag:
+
+1. Clean the local apt cache to ensure all packages will be re-downloaded:
+sudo apt-get clean
+Run:
+sudo apt-get install --reinstall --download-only haproxy
+This will re-download HAProxy and any dependencies that are not currently installed, but it might not always fetch already installed dependencies unless they are explicitly specified or outdated
+
+Option 3: Manual Dependency Listing and Download
+If you want granular control, you can list dependencies and download each:
+1. List dependencies:
+apt-cache depends haproxy
+2. For each dependency, run:
+sudo apt-get download <dependency>
+
+
+Example
+sudo apt-get install apt-rdepends
+apt download $(apt-rdepends haproxy | grep -v "^ ")
