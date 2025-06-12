@@ -355,20 +355,20 @@ Replace /dev/sdX1 with the USB drive’s device name (check with lsblk).
 
 2.2 Extract the .tar.gz
 sudo mkdir /root/airgap_install
-sudo cp airgap_haproxy_keepalived.tar.gz /root/airgap_install/
-cd /root/airgap_install
+sudo cp airgap_haproxy_keepalived.tar.gz /opt/airgap_install/
+cd /opt/airgap_install
 tar xvfz airgap_haproxy_keepalived.tar.gz
 
 2.3 Run bootstrap.sh
 Run the script with the appropriate role (master for LB1, backup for LB2):
 On LB1
 
-cd /root/airgap_install
+cd /opt/airgap_install
 sudo ./bootstrap.sh master
 
 On LB2:
 
-cd /root/airgap_install
+cd /opt/airgap_install
 sudo ./bootstrap.sh backup
 
 The script will:
@@ -463,14 +463,16 @@ echo "All available .deb files have been downloaded to the 'deb_files' directory
 echo "Note: Some packages might already be at their latest version or not available for direct download via 'apt-get download'."
 
 **
+vi deb_collector.sh
+
 #!/bin/bash
 
 # Define the target applications whose dependencies we want to download
 TARGET_APPLICATIONS=("haproxy" "keepalived")
 
 # Create the deb_files directory if it doesn't exist
-mkdir -p deb_files
-
+#mkdir -p deb_files
+cd deb_files
 # Check if apt-rdepends is installed
 if ! command -v apt-rdepends &> /dev/null; then
     echo "Error: apt-rdepends is not installed."
