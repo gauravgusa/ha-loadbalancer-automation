@@ -1,3 +1,21 @@
+clean uninstall haproxy and keepalived
+sudo systemctl stop haproxy
+sudo systemctl stop keepalived
+sudo systemctl disable haproxy
+sudo systemctl disable keepalived
+sudo apt purge haproxy keepalived
+sudo apt autoremove --purge
+sudo apt clean
+dpkg -l | grep "^rc"
+# Example if haproxy is listed with 'rc' status
+sudo dpkg --purge haproxy
+
+# Example if keepalived is listed with 'rc' status
+sudo dpkg --purge keepalived
+
+**
+
+
 To set up HAProxy and Keepalived in an air-gapped Debian-based system (e.g., Ubuntu 20.04 or Debian 11) using .tar.gz and .deb files,
 with the final deliverable being a single .tar.gz file containing all necessary packages and a bootstrap.sh script to install
 and configure both tools, we’ll follow these steps. 
