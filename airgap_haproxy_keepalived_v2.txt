@@ -1,0 +1,43 @@
+ script to download HAProxy, Keepalived, and all dependencies for Ubuntu 22.04, then create an installation bundle:
+
+#!/bin/bash
+# download_packages.sh - Run on internet-connected Ubuntu 22.04 system
+
+# Add HAProxy PPA and update
+sudo add-apt-repository ppa:vbernat/haproxy-2.8 -y
+sudo apt-get update
+
+# Install dependency tool
+sudo apt-get install -y apt-rdepends
+
+# Create temporary directory
+mkdir -p haproxy-keepalived-bundle
+cd haproxy-keepalived-bundle
+
+# Download packages with all dependencies
+apt-get download $(apt-rdepends haproxy keepalived | grep -v "^ " | sed 's/debconf-2.0/debconf/g')
+
+# Create installation script
+cat > install.sh << 'EOL'
+#!/bin/bash
+# install.sh - Run on target system
+
+# Install all packages
+sudo dpkg -i *.deb || true
+sudo apt-get install -f -y
+EOL
+
+chmod +x install.sh
+
+# Create bundle
+cd ..
+tar -czvf haproxy-keepalived-bundle.tar.gz haproxy-keepalived-bundle/
+echo "Bundle created: haproxy-keepalived-bundle.tar.gz"
+
+
+
+To use the bundle on another Ubuntu 22.04 system:
+# On target system
+tar -xzvf haproxy-keepalived-bundle.tar.gz
+cd haproxy-keepalived-bundle
+sudo ./install.sh
