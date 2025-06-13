@@ -282,6 +282,30 @@ else
     exit 1
 fi
 
+# --- Create the target directory for HAProxy certs if it doesn't exist ---
+# NOTE: This operation typically requires sudo privileges.
+echo "Ensuring /etc/haproxy/certs/ directory exists..."
+sudo mkdir -p /etc/haproxy/certs/
+if [ $? -ne 0 ]; then
+    echo "Error: Failed to create /etc/haproxy/certs/. Do you have sudo privileges?"
+    exit 1
+fi
+
+# --- Copy ha.pem to the target directory ---
+# NOTE: This operation typically requires sudo privileges.
+echo "Copying certs/ha.pem to /etc/haproxy/certs/ha.pem..."
+# Ensure 'certs/ha.pem' exists in the source location where the script is run.
+if [[ ! -f "certs/ha.pem" ]]; then
+    echo "Error: Source file certs/ha.pem not found. Please ensure it exists."
+    exit 1
+fi
+sudo cp certs/ha.pem /etc/haproxy/certs/ha.pem
+if [ $? -ne 0 ]; then
+    echo "Error: Failed to copy certs/ha.pem. Do you have sudo privileges and is the source file present?"
+    exit 1
+fi
+
+
 # Step 5: Copy Keepalived configuration based on role
 echo "Setting up Keepalived configuration..."
 if [ "$SERVER_ROLE" = "master" ] && [ -f "config_files/keepalived_master.conf" ]; then
@@ -355,7 +379,7 @@ chmod +x bootstrap.sh
 Create a single .tar.gz file containing all files:
 
 cd ~/airgap_haproxy_keepalived
-tar -czf airgap_haproxy_keepalived.tar.gz bootstrap.sh deb_files/ source_files/ config_files/
+tar -czf airgap_haproxy_keepalived.tar.gz bootstrap.sh deb_files/ certs/ config_files/
 
 1.8 Transfer to USB Drive
 sudo mkdir /media/$USER/usb_drive
