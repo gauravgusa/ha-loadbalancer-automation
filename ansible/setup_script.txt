@@ -1,0 +1,1225 @@
+
+#!/bin/bash
+# setup-environment.sh - Complete environment setup script
+
+set -e
+
+echo "========================================="
+echo "HAProxy Keepalived Ansible Setup"
+echo "========================================="
+
+# Function to check if command exists
+command_exists() {
+    command -v "$1" >/dev/null 2>&1
+}
+
+# Install prerequisites
+install_prerequisites() {
+    echo "Installing prerequisites..."
+    
+    # Check for package manager
+    if command_exists apt-get; then
+        sudo apt-get update
+        sudo apt-get install -y python3 python3-pip curl wget
+    elif command_exists yum; then
+        sudo yum install -y python3 python3-pip curl wget
+    elif command_exists brew; then
+        brew install python3 curl wget
+    else
+        echo "Package manager not found. Please install Python3, pip, curl, and wget manually."
+        exit 1
+    fi
+    
+    # Install Python packages
+    pip3 install --user ansible kubernetes PyYAML
+    
+    # Install kubectl if not present
+    if ! command_exists kubectl; then
+        echo "Installing kubectl..."
+        curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
+        chmod +x kubectl
+        sudo mv kubectl /usr/local/bin/
+    fi
+    
+    # Install helm if not present
+    if ! command_exists helm; then
+        echo "Installing helm..."
+        curl https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+    fi
+    
+    # Install minikube if not present
+    if ! command_exists minikube; then
+        echo "Installing minikube..."
+        curl -Lo minikube https://storage.googleapis.com/minikube/releases/latest/minikube-linux-amd64
+        chmod +x minikube
+        sudo mv minikube /usr/local/bin/
+    fi
+}
+
+# Create project structure
+create_project_structure() {
+    echo "Creating project structure..."
+    
+    PROJECT_DIR="ansible-haproxy-k8s"
+    
+    # Create directories
+    mkdir -p $PROJECT_DIR/{inventory,playbooks,roles/haproxy-keepalived/{tasks,templates,vars},helm/haproxy-keepalived/templates,scripts}
+    
+    cd $PROJECT_DIR
+    
+    # Create ansible.cfg
+    cat > ansible.cfg << 'EOF'
+[defaults]
+host_key_checking = False
+inventory = inventory/hosts.yml
+roles_path = roles
+stdout_callback = yaml
+gathering = smart
+fact_caching = memory
+
+[inventory]
+enable_plugins = host_list, script, auto, yaml, ini, toml
+EOF
+
+    # Create inventory
+    cat > inventory/hosts.yml << 'EOF'
+all:
+  children:
+    minikube:
+      hosts:
+        localhost:
+          ansible_connection: local
+          ansible_python_interpreter: "{{ ansible_playbook_python }}"
+  vars:
+    haproxy_stats_port: 8404
+    haproxy_stats_user: admin
+    haproxy_stats_password: admin123
+    keepalived_interface: eth0
+    keepalived_vip: "192.168.49.100"
+    keepalived_router_id: 50
+    backend_servers:
+      - name: web1
+        address: "web1.default.svc.cluster.local"
+        port: 80
+        check: "check"
+      - name: web2
+        address: "web2.default.svc.cluster.local"
+        port: 80
+        check: "check"
+EOF
+
+    echo "Project structure created in $PROJECT_DIR/"
+}
+
+# Deploy sample backend applications
+deploy_backends() {
+    echo "Deploying sample backend applications..."
+    
+    # Create web1 deployment
+    kubectl create deployment web1 --image=nginx:alpine || true
+    kubectl expose deployment web1 --port=80 --target-port=80 || true
+    
+    # Create web2 deployment
+    kubectl create deployment web2 --image=httpd:alpine || true
+    kubectl expose deployment web2 --port=80 --target-port=80 || true
+    
+    # Scale deployments
+    kubectl scale deployment web1 --replicas=2
+    kubectl scale deployment web2 --replicas=2
+    
+    # Wait for deployments
+    kubectl wait --for=condition=available deployment/web1 --timeout=300s
+    kubectl wait --for=condition=available deployment/web2 --timeout=300s
+    
+    echo "Backend applications deployed successfully"
+}
+
+# Main execution
+main() {
+    echo "Starting setup process..."
+    
+    # Install prerequisites
+    install_prerequisites
+    
+    # Start minikube if not running
+    if ! minikube status >/dev/null 2>&1; then
+        echo "Starting Minikube..."
+        minikube start --driver=docker --cpus=2 --memory=4096
+        minikube addons enable ingress
+        minikube addons enable metrics-server
+    fi
+    
+    # Create project structure
+    create_project_structure
+    
+    # Deploy backend applications
+    deploy_backends
+    
+    echo "========================================="
+    echo "Setup completed successfully!"
+    echo "========================================="
+    echo "Next steps:"
+    echo "1. cd ansible-haproxy-k8s"
+    echo "2. Run: ansible-playbook playbooks/deploy-haproxy.yml"
+    echo "3. Run: ansible-playbook playbooks/test-deployment.yml"
+    echo "========================================="
+}
+
+main "$@"
+
+---
+
+#!/bin/bash
+# deploy-haproxy.sh - Deployment script
+
+set -e
+
+NAMESPACE="haproxy-system"
+PROJECT_DIR="ansible-haproxy-k8s"
+
+echo "========================================="
+echo "Deploying HAProxy with Keepalived"
+echo "========================================="
+
+# Check if project directory exists
+if [ ! -d "$PROJECT_DIR" ]; then
+    echo "Project directory not found. Run setup-environment.sh first."
+    exit 1
+fi
+
+cd $PROJECT_DIR
+
+# Create necessary template files
+create_templates() {
+    echo "Creating Ansible templates..."
+    
+    # HAProxy ConfigMap template
+    cat > roles/haproxy-keepalived/templates/haproxy-configmap.yml.j2 << 'EOF'
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: haproxy-config
+  namespace: {{ namespace | default('haproxy-system') }}
+data:
+  haproxy.cfg: |
+    global
+        daemon
+        maxconn 4096
+        log stdout local0
+        
+    defaults
+        mode http
+        timeout connect 5000ms
+        timeout client 50000ms
+        timeout server 50000ms
+        option httplog
+        option dontlognull
+        option redispatch
+        retries 3
+        
+    frontend http_front
+        bind *:80
+        default_backend http_back
+        
+    backend http_back
+        balance roundrobin
+        option httpchk GET /
+        http-check expect status 200
+{% for server in backend_servers %}
+        server {{ server.name }} {{ server.address }}:{{ server.port }} {{ server.check }}
+{% endfor %}
+        
+    listen stats
+        bind *:{{ haproxy_stats_port }}
+        stats enable
+        stats uri /stats
+        stats refresh 30s
+        stats auth {{ haproxy_stats_user }}:{{ haproxy_stats_password }}
+EOF
+
+    # HAProxy Deployment template
+    cat > roles/haproxy-keepalived/templates/haproxy-deployment.yml.j2 << 'EOF'
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: haproxy
+  namespace: {{ namespace | default('haproxy-system') }}
+  labels:
+    app: haproxy
+spec:
+  replicas: {{ haproxy_replicas | default(2) }}
+  selector:
+    matchLabels:
+      app: haproxy
+  template:
+    metadata:
+      labels:
+        app: haproxy
+    spec:
+      containers:
+      - name: haproxy
+        image: haproxy:2.8
+        ports:
+        - containerPort: 80
+          name: http
+        - containerPort: {{ haproxy_stats_port }}
+          name: stats
+        volumeMounts:
+        - name: config
+          mountPath: /usr/local/etc/haproxy/haproxy.cfg
+          subPath: haproxy.cfg
+        livenessProbe:
+          httpGet:
+            path: /stats
+            port: {{ haproxy_stats_port }}
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /stats
+            port: {{ haproxy_stats_port }}
+          initialDelaySeconds: 5
+          periodSeconds: 5
+        resources:
+          requests:
+            memory: "64Mi"
+            cpu: "50m"
+          limits:
+            memory: "128Mi"
+            cpu: "100m"
+      volumes:
+      - name: config
+        configMap:
+          name: haproxy-config
+EOF
+
+    # HAProxy Service template
+    cat > roles/haproxy-keepalived/templates/haproxy-service.yml.j2 << 'EOF'
+apiVersion: v1
+kind: Service
+metadata:
+  name: haproxy
+  namespace: {{ namespace | default('haproxy-system') }}
+  labels:
+    app: haproxy
+spec:
+  type: {{ service_type | default('NodePort') }}
+  ports:
+  - port: 80
+    targetPort: 80
+    name: http
+    nodePort: 30080
+  - port: {{ haproxy_stats_port }}
+    targetPort: {{ haproxy_stats_port }}
+    name: stats
+    nodePort: 30404
+  selector:
+    app: haproxy
+EOF
+
+    # Keepalived ConfigMap template
+    cat > roles/haproxy-keepalived/templates/keepalived-configmap.yml.j2 << 'EOF'
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: keepalived-config
+  namespace: {{ namespace | default('haproxy-system') }}
+data:
+  keepalived.conf: |
+    global_defs {
+        router_id {{ ansible_hostname | default('k8s-node') }}
+    }
+    
+    vrrp_script chk_haproxy {
+        script "/bin/curl -f http://localhost:{{ haproxy_stats_port }}/stats || exit 1"
+        interval 2
+        weight -2
+        fall 3
+        rise 2
+    }
+    
+    vrrp_instance VI_1 {
+        state BACKUP
+        interface {{ keepalived_interface }}
+        virtual_router_id {{ keepalived_router_id }}
+        priority 100
+        advert_int 1
+        authentication {
+            auth_type PASS
+            auth_pass {{ keepalived_password | default('changeme') }}
+        }
+        virtual_ipaddress {
+            {{ keepalived_vip }}
+        }
+        track_script {
+            chk_haproxy
+        }
+    }
+EOF
+
+    # Keepalived DaemonSet template
+    cat > roles/haproxy-keepalived/templates/keepalived-daemonset.yml.j2 << 'EOF'
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: keepalived
+  namespace: {{ namespace | default('haproxy-system') }}
+  labels:
+    app: keepalived
+spec:
+  selector:
+    matchLabels:
+      app: keepalived
+  template:
+    metadata:
+      labels:
+        app: keepalived
+    spec:
+      hostNetwork: true
+      containers:
+      - name: keepalived
+        image: osixia/keepalived:2.0.20
+        securityContext:
+          privileged: true
+          capabilities:
+            add:
+              - NET_ADMIN
+              - NET_BROADCAST
+              - NET_RAW
+        env:
+        - name: KEEPALIVED_INTERFACE
+          value: "{{ keepalived_interface }}"
+        - name: KEEPALIVED_VIRTUAL_IPS
+          value: "{{ keepalived_vip }}"
+        - name: KEEPALIVED_PRIORITY
+          value: "100"
+        volumeMounts:
+        - name: config
+          mountPath: /container/service/keepalived/assets/keepalived.conf
+          subPath: keepalived.conf
+        - name: lib-modules
+          mountPath: /lib/modules
+          readOnly: true
+        resources:
+          requests:
+            memory: "32Mi"
+            cpu: "25m"
+          limits:
+            memory: "64Mi"
+            cpu: "50m"
+      volumes:
+      - name: config
+        configMap:
+          name: keepalived-config
+      - name: lib-modules
+        hostPath:
+          path: /lib/modules
+      nodeSelector:
+        kubernetes.io/os: linux
+EOF
+}
+
+# Create playbook files
+create_playbooks() {
+    echo "Creating Ansible playbooks..."
+    
+    # Main deployment playbook
+    cat > playbooks/deploy-haproxy.yml << 'EOF'
+---
+- name: Deploy HAProxy with Keepalived on Minikube
+  hosts: minikube
+  gather_facts: yes
+  vars:
+    namespace: haproxy-system
+    haproxy_replicas: 2
+    service_type: NodePort
+  
+  tasks:
+    - name: Ensure kubectl is available
+      command: kubectl version --client
+      register: kubectl_check
+      failed_when: kubectl_check.rc != 0
+
+    - name: Create namespace
+      kubernetes.core.k8s:
+        name: "{{ namespace }}"
+        api_version: v1
+        kind: Namespace
+        state: present
+
+    - name: Create temporary directory for manifests
+      tempfile:
+        state: directory
+        suffix: _haproxy_manifests
+      register: temp_dir
+
+    - name: Generate HAProxy ConfigMap
+      template:
+        src: ../roles/haproxy-keepalived/templates/haproxy-configmap.yml.j2
+        dest: "{{ temp_dir.path }}/haproxy-configmap.yml"
+
+    - name: Generate HAProxy Deployment
+      template:
+        src: ../roles/haproxy-keepalived/templates/haproxy-deployment.yml.j2
+        dest: "{{ temp_dir.path }}/haproxy-deployment.yml"
+
+    - name: Generate HAProxy Service
+      template:
+        src: ../roles/haproxy-keepalived/templates/haproxy-service.yml.j2
+        dest: "{{ temp_dir.path }}/haproxy-service.yml"
+
+    - name: Generate Keepalived ConfigMap
+      template:
+        src: ../roles/haproxy-keepalived/templates/keepalived-configmap.yml.j2
+        dest: "{{ temp_dir.path }}/keepalived-configmap.yml"
+
+    - name: Generate Keepalived DaemonSet
+      template:
+        src: ../roles/haproxy-keepalived/templates/keepalived-daemonset.yml.j2
+        dest: "{{ temp_dir.path }}/keepalived-daemonset.yml"
+
+    - name: Apply HAProxy ConfigMap
+      kubernetes.core.k8s:
+        state: present
+        src: "{{ temp_dir.path }}/haproxy-configmap.yml"
+
+    - name: Apply HAProxy Deployment
+      kubernetes.core.k8s:
+        state: present
+        src: "{{ temp_dir.path }}/haproxy-deployment.yml"
+
+    - name: Apply HAProxy Service
+      kubernetes.core.k8s:
+        state: present
+        src: "{{ temp_dir.path }}/haproxy-service.yml"
+
+    - name: Apply Keepalived ConfigMap
+      kubernetes.core.k8s:
+        state: present
+        src: "{{ temp_dir.path }}/keepalived-configmap.yml"
+
+    - name: Apply Keepalived DaemonSet
+      kubernetes.core.k8s:
+        state: present
+        src: "{{ temp_dir.path }}/keepalived-daemonset.yml"
+
+    - name: Wait for HAProxy deployment to be ready
+      kubernetes.core.k8s_info:
+        api_version: apps/v1
+        kind: Deployment
+        name: haproxy
+        namespace: "{{ namespace }}"
+        wait: true
+        wait_condition:
+          type: Available
+          status: "True"
+        wait_timeout: 300
+
+    - name: Get HAProxy service NodePort
+      kubernetes.core.k8s_info:
+        api_version: v1
+        kind: Service
+        name: haproxy
+        namespace: "{{ namespace }}"
+      register: haproxy_svc
+
+    - name: Display access information
+      debug:
+        msg:
+          - "HAProxy deployed successfully!"
+          - "Access HAProxy: http://{{ minikube_ip }}:30080"
+          - "Access Stats: http://{{ minikube_ip }}:30404/stats (admin/admin123)"
+      vars:
+        minikube_ip: "{{ ansible_default_ipv4.address }}"
+
+    - name: Clean up temporary directory
+      file:
+        path: "{{ temp_dir.path }}"
+        state: absent
+EOF
+
+    # Test playbook
+    cat > playbooks/test-deployment.yml << 'EOF'
+---
+- name: Test HAProxy Keepalived Deployment
+  hosts: minikube
+  gather_facts: yes
+  vars:
+    namespace: haproxy-system
+
+  tasks:
+    - name: Get Minikube IP
+      command: minikube ip
+      register: minikube_ip_cmd
+      
+    - name: Set Minikube IP variable
+      set_fact:
+        minikube_ip: "{{ minikube_ip_cmd.stdout }}"
+
+    - name: Get HAProxy service info
+      kubernetes.core.k8s_info:
+        api_version: v1
+        kind: Service
+        name: haproxy
+        namespace: "{{ namespace }}"
+      register: haproxy_service
+
+    - name: Get HAProxy pods
+      kubernetes.core.k8s_info:
+        api_version: v1
+        kind: Pod
+        namespace: "{{ namespace }}"
+        label_selectors:
+          - app=haproxy
+      register: haproxy_pods
+
+    - name: Get Keepalived pods
+      kubernetes.core.k8s_info:
+        api_version: v1
+        kind: Pod
+        namespace: "{{ namespace }}"
+        label_selectors:
+          - app=keepalived
+      register: keepalived_pods
+
+    - name: Display service information
+      debug:
+        msg:
+          - "Service Name: {{ haproxy_service.resources[0].metadata.name }}"
+          - "Service Type: {{ haproxy_service.resources[0].spec.type }}"
+          - "NodePorts: {{ haproxy_service.resources[0].spec.ports }}"
+
+    - name: Display pod status
+      debug:
+        msg: 
+          - "HAProxy Pods:"
+          - "{{ haproxy_pods.resources | map(attribute='metadata.name') | list }}"
+          - "Keepalived Pods:"
+          - "{{ keepalived_pods.resources | map(attribute='metadata.name') | list }}"
+
+    - name: Test HAProxy stats endpoint
+      uri:
+        url: "http://{{ minikube_ip }}:30404/stats"
+        user: admin
+        password: admin123
+        method: GET
+        force_basic_auth: yes
+        timeout: 10
+      register: stats_response
+      ignore_errors: yes
+
+    - name: Display stats test result
+      debug:
+        msg: "HAProxy stats accessible: {{ stats_response.status == 200 }}"
+
+    - name: Test load balancing endpoint
+      uri:
+        url: "http://{{ minikube_ip }}:30080/"
+        method: GET
+        timeout: 10
+      register: lb_response
+      ignore_errors: yes
+
+    - name: Display load balancing test result
+      debug:
+        msg: "Load balancing accessible: {{ lb_response.status == 200 }}"
+
+    - name: Show HAProxy logs
+      kubernetes.core.k8s_log:
+        namespace: "{{ namespace }}"
+        label_selectors:
+          - app=haproxy
+        tail_lines: 10
+      register: haproxy_logs
+
+    - name: Display HAProxy logs
+      debug:
+        msg: "{{ haproxy_logs.log_lines | default(['No logs available']) }}"
+
+    - name: Performance test with multiple requests
+      uri:
+        url: "http://{{ minikube_ip }}:30080/"
+        method: GET
+        timeout: 5
+      register: perf_test
+      ignore_errors: yes
+      loop: "{{ range(1, 6) | list }}"
+
+    - name: Display performance test results
+      debug:
+        msg: "Request {{ item.item }}: {{ 'SUCCESS' if item.status == 200 else 'FAILED' }}"
+      loop: "{{ perf_test.results }}"
+      when: perf_test.results is defined
+EOF
+}
+
+# Create role tasks
+create_role_tasks() {
+    echo "Creating role tasks..."
+    
+    cat > roles/haproxy-keepalived/tasks/main.yml << 'EOF'
+---
+- name: Install Python Kubernetes client
+  pip:
+    name: kubernetes
+    state: present
+  become: no
+
+- name: Create HAProxy namespace
+  kubernetes.core.k8s:
+    name: "{{ namespace | default('haproxy-system') }}"
+    api_version: v1
+    kind: Namespace
+    state: present
+
+- name: Deploy HAProxy ConfigMap
+  kubernetes.core.k8s:
+    definition:
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        name: haproxy-config
+        namespace: "{{ namespace | default('haproxy-system') }}"
+      data:
+        haproxy.cfg: "{{ lookup('template', 'haproxy.cfg.j2') }}"
+
+- name: Deploy HAProxy Deployment
+  kubernetes.core.k8s:
+    definition: "{{ lookup('template', 'haproxy-deployment.yml.j2') | from_yaml }}"
+
+- name: Deploy HAProxy Service
+  kubernetes.core.k8s:
+    definition: "{{ lookup('template', 'haproxy-service.yml.j2') | from_yaml }}"
+
+- name: Deploy Keepalived ConfigMap
+  kubernetes.core.k8s:
+    definition: "{{ lookup('template', 'keepalived-configmap.yml.j2') | from_yaml }}"
+
+- name: Deploy Keepalived DaemonSet
+  kubernetes.core.k8s:
+    definition: "{{ lookup('template', 'keepalived-daemonset.yml.j2') | from_yaml }}"
+EOF
+
+    cat > roles/haproxy-keepalived/vars/main.yml << 'EOF'
+---
+namespace: haproxy-system
+haproxy_replicas: 2
+haproxy_image: "haproxy:2.8"
+keepalived_image: "osixia/keepalived:2.0.20"
+keepalived_password: "changeme123"
+service_type: NodePort
+EOF
+}
+
+# Create Helm chart
+create_helm_chart() {
+    echo "Creating Helm chart..."
+    
+    cat > helm/haproxy-keepalived/Chart.yaml << 'EOF'
+apiVersion: v2
+name: haproxy-keepalived
+description: HAProxy with Keepalived for High Availability Load Balancing
+type: application
+version: 0.1.0
+appVersion: "2.8"
+EOF
+
+    cat > helm/haproxy-keepalived/values.yaml << 'EOF'
+replicaCount: 2
+
+image:
+  haproxy:
+    repository: haproxy
+    tag: "2.8"
+    pullPolicy: IfNotPresent
+  keepalived:
+    repository: osixia/keepalived
+    tag: "2.0.20"
+    pullPolicy: IfNotPresent
+
+service:
+  type: NodePort
+  port: 80
+  statsPort: 8404
+  nodePort: 30080
+  statsNodePort: 30404
+
+haproxy:
+  stats:
+    enabled: true
+    port: 8404
+    user: admin
+    password: admin123
+
+keepalived:
+  interface: eth0
+  vip: "192.168.49.100"
+  router_id: 50
+  password: "changeme123"
+
+backends:
+  - name: web1
+    address: "web1.default.svc.cluster.local"
+    port: 80
+    check: "check"
+  - name: web2
+    address: "web2.default.svc.cluster.local"
+    port: 80
+    check: "check"
+
+resources:
+  haproxy:
+    limits:
+      cpu: 100m
+      memory: 128Mi
+    requests:
+      cpu: 50m
+      memory: 64Mi
+  keepalived:
+    limits:
+      cpu: 50m
+      memory: 64Mi
+    requests:
+      cpu: 25m
+      memory: 32Mi
+EOF
+
+    # Create Helm templates (simplified versions)
+    cat > helm/haproxy-keepalived/templates/haproxy-deployment.yaml << 'EOF'
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "haproxy-keepalived.fullname" . }}-haproxy
+  labels:
+    app: haproxy
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      app: haproxy
+  template:
+    metadata:
+      labels:
+        app: haproxy
+    spec:
+      containers:
+      - name: haproxy
+        image: "{{ .Values.image.haproxy.repository }}:{{ .Values.image.haproxy.tag }}"
+        ports:
+        - containerPort: 80
+        - containerPort: {{ .Values.haproxy.stats.port }}
+        resources:
+          {{- toYaml .Values.resources.haproxy | nindent 12 }}
+EOF
+}
+
+# Main deployment function
+deploy() {
+    echo "Starting deployment process..."
+    
+    # Create all necessary files
+    create_templates
+    create_playbooks
+    create_role_tasks
+    create_helm_chart
+    
+    # Install Ansible Kubernetes collection
+    echo "Installing Ansible Kubernetes collection..."
+    ansible-galaxy collection install kubernetes.core
+    
+    # Run the deployment
+    echo "Running Ansible deployment..."
+    ansible-playbook playbooks/deploy-haproxy.yml -v
+    
+    echo "Deployment completed!"
+    echo "Running tests..."
+    sleep 30  # Wait for pods to stabilize
+    ansible-playbook playbooks/test-deployment.yml -v
+}
+
+# Alternative Helm deployment
+deploy_with_helm() {
+    echo "Deploying with Helm..."
+    
+    create_helm_chart
+    
+    # Deploy using Helm
+    helm upgrade --install haproxy-keepalived ./helm/haproxy-keepalived \
+        --namespace haproxy-system \
+        --create-namespace \
+        --wait \
+        --timeout 300s
+    
+    echo "Helm deployment completed!"
+}
+
+# Cleanup function
+cleanup() {
+    echo "Cleaning up deployment..."
+    kubectl delete namespace haproxy-system --ignore-not-found=true
+    kubectl delete deployment web1 web2 --ignore-not-found=true
+    kubectl delete service web1 web2 --ignore-not-found=true
+    echo "Cleanup completed!"
+}
+
+# Usage function
+usage() {
+    echo "Usage: $0 [deploy|helm|test|cleanup]"
+    echo "  deploy  - Deploy using Ansible"
+    echo "  helm    - Deploy using Helm"
+    echo "  test    - Run tests only"
+    echo "  cleanup - Clean up resources"
+    exit 1
+}
+
+# Main execution
+case "${1:-deploy}" in
+    deploy)
+        deploy
+        ;;
+    helm)
+        deploy_with_helm
+        ;;
+    test)
+        ansible-playbook playbooks/test-deployment.yml -v
+        ;;
+    cleanup)
+        cleanup
+        ;;
+    *)
+        usage
+        ;;
+esac
+
+---
+
+#!/bin/bash
+# comprehensive-test.sh - Comprehensive testing script
+
+set -e
+
+NAMESPACE="haproxy-system"
+MINIKUBE_IP=$(minikube ip)
+
+echo "========================================="
+echo "Comprehensive HAProxy Keepalived Testing"
+echo "========================================="
+
+# Test functions
+test_basic_connectivity() {
+    echo "Testing basic connectivity..."
+    
+    # Test HAProxy main service
+    echo "Testing HAProxy service on port 30080..."
+    for i in {1..5}; do
+        echo "Request $i:"
+        curl -s -m 5 "http://${MINIKUBE_IP}:30080/" | head -n 3 || echo "Connection failed"
+        sleep 1
+    done
+}
+
+test_stats_endpoint() {
+    echo "Testing HAProxy stats endpoint..."
+    
+    # Test stats with authentication
+    if curl -s -u admin:admin123 -m 5 "http://${MINIKUBE_IP}:30404/stats" | grep -q "HAProxy Statistics"; then
+        echo "✓ Stats endpoint accessible"
+    else
+        echo "✗ Stats endpoint failed"
+    fi
+}
+
+test_load_balancing() {
+    echo "Testing load balancing distribution..."
+    
+    # Make multiple requests and check distribution
+    declare -A server_counts
+    
+    for i in {1..20}; do
+        response=$(curl -s -m 3 "http://${MINIKUBE_IP}:30080/" 2>/dev/null || echo "failed")
+        if echo "$response" | grep -q "nginx"; then
+            ((server_counts[nginx]++))
+        elif echo "$response" | grep -q "apache\|httpd"; then
+            ((server_counts[apache]++))
+        else
+            ((server_counts[failed]++))
+        fi
+    done
+    
+    echo "Load balancing results:"
+    for server in "${!server_counts[@]}"; do
+        echo "  $server: ${server_counts[$server]} requests"
+    done
+}
+
+test_high_availability() {
+    echo "Testing high availability..."
+    
+    # Get HAProxy pod names
+    HAPROXY_PODS=$(kubectl get pods -n $NAMESPACE -l app=haproxy -o jsonpath='{.items[*].metadata.name}')
+    
+    if [ -z "$HAPROXY_PODS" ]; then
+        echo "✗ No HAProxy pods found"
+        return 1
+    fi
+    
+    # Test connectivity before pod deletion
+    echo "Testing connectivity before failover..."
+    curl -s -m 5 "http://${MINIKUBE_IP}:30080/" > /dev/null && echo "✓ Service accessible"
+    
+    # Delete one HAProxy pod
+    FIRST_POD=$(echo $HAPROXY_PODS | cut -d' ' -f1)
+    echo "Deleting pod: $FIRST_POD"
+    kubectl delete pod $FIRST_POD -n $NAMESPACE
+    
+    # Wait a moment for failover
+    sleep 10
+    
+    # Test connectivity after pod deletion
+    echo "Testing connectivity after failover..."
+    curl -s -m 5 "http://${MINIKUBE_IP}:30080/" > /dev/null && echo "✓ Service still accessible after failover"
+    
+    # Wait for pod to be recreated
+    echo "Waiting for pod recreation..."
+    kubectl wait --for=condition=ready pod -l app=haproxy -n $NAMESPACE --timeout=120s
+}
+
+test_performance() {
+    echo "Testing performance..."
+    
+    # Simple performance test with concurrent requests
+    echo "Running concurrent requests test..."
+    
+    # Use Apache Bench if available, otherwise use curl loop
+    if command -v ab >/dev/null 2>&1; then
+        ab -n 100 -c 10 "http://${MINIKUBE_IP}:30080/" | grep -E "(Requests per second|Time per request)"
+    else
+        echo "Running 50 concurrent curl requests..."
+        for i in {1..50}; do
+            (curl -s -m 3 "http://${MINIKUBE_IP}:30080/" > /dev/null && echo "Request $i: OK") &
+        done
+        wait
+    fi
+}
+
+test_keepalived_status() {
+    echo "Testing Keepalived status..."
+    
+    # Get Keepalived pods
+    KEEPALIVED_PODS=$(kubectl get pods -n $NAMESPACE -l app=keepalived -o jsonpath='{.items[*].metadata.name}')
+    
+    if [ -z "$KEEPALIVED_PODS" ]; then
+        echo "✗ No Keepalived pods found"
+        return 1
+    fi
+    
+    echo "Keepalived pods: $KEEPALIVED_PODS"
+    
+    # Check Keepalived logs for VRRP messages
+    for pod in $KEEPALIVED_PODS; do
+        echo "Checking logs for pod: $pod"
+        kubectl logs $pod -n $NAMESPACE --tail=5 | grep -i vrrp || echo "No VRRP logs found"
+    done
+}
+
+test_configuration() {
+    echo "Testing configuration..."
+    
+    # Check HAProxy configuration
+    echo "Checking HAProxy configuration..."
+    kubectl get configmap haproxy-config -n $NAMESPACE -o yaml | grep -A 20 "haproxy.cfg:"
+    
+    # Check Keepalived configuration
+    echo "Checking Keepalived configuration..."
+    kubectl get configmap keepalived-config -n $NAMESPACE -o yaml | grep -A 10 "keepalived.conf:"
+}
+
+monitor_resources() {
+    echo "Monitoring resource usage..."
+    
+    # Check resource usage
+    echo "Pod resource usage:"
+    kubectl top pods -n $NAMESPACE 2>/dev/null || echo "Metrics not available"
+    
+    # Check pod status
+    echo "Pod status:"
+    kubectl get pods -n $NAMESPACE -o wide
+    
+    # Check services
+    echo "Services:"
+    kubectl get services -n $NAMESPACE
+}
+
+generate_report() {
+    echo "========================================="
+    echo "Test Summary Report"
+    echo "========================================="
+    echo "Timestamp: $(date)"
+    echo "Minikube IP: $MINIKUBE_IP"
+    echo "Namespace: $NAMESPACE"
+    echo ""
+    
+    # Collect final status
+    echo "Final Status:"
+    kubectl get all -n $NAMESPACE
+    
+    echo ""
+    echo "Recent events:"
+    kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' | tail -10
+}
+
+# Main test execution
+main() {
+    echo "Starting comprehensive testing..."
+    
+    # Wait for services to be ready
+    echo "Waiting for services to be ready..."
+    kubectl wait --for=condition=available deployment/haproxy -n $NAMESPACE --timeout=300s
+    
+    # Run all tests
+    test_basic_connectivity
+    echo ""
+    test_stats_endpoint
+    echo ""
+    test_load_balancing
+    echo ""
+    test_configuration
+    echo ""
+    test_keepalived_status
+    echo ""
+    monitor_resources
+    echo ""
+    test_performance
+    echo ""
+    test_high_availability
+    echo ""
+    
+    # Generate final report
+    generate_report
+    
+    echo "========================================="
+    echo "Testing completed!"
+    echo "========================================="
+}
+
+# Run tests
+main "$@"
+
+
+*****************
+
+HAProxy with Keepalived on Minikube - Complete Setup Guide
+This comprehensive setup provides high-availability load balancing using HAProxy and Keepalived on Minikube, deployed via Ansible with Helm chart options and Jinja2 templates.
+🚀 Quick Start
+Prerequisites
+
+Linux/macOS system
+Docker installed
+Internet connection
+Sudo access
+
+One-Command Setup
+bash# Download and run the complete setup
+curl -fsSL https://raw.githubusercontent.com/your-repo/setup-environment.sh | bash
+📁 Project Structure
+ansible-haproxy-k8s/
+├── ansible.cfg                          # Ansible configuration
+├── inventory/
+│   └── hosts.yml                        # Inventory with variables
+├── playbooks/
+│   ├── deploy-haproxy.yml               # Main deployment playbook
+│   └── test-deployment.yml              # Testing playbook
+├── roles/
+│   └── haproxy-keepalived/
+│       ├── tasks/main.yml               # Role tasks
+│       ├── templates/                   # Jinja2 templates
+│       │   ├── haproxy-configmap.yml.j2
+│       │   ├── haproxy-deployment.yml.j2
+│       │   ├── haproxy-service.yml.j2
+│       │   ├── keepalived-configmap.yml.j2
+│       │   └── keepalived-daemonset.yml.j2
+│       └── vars/main.yml                # Role variables
+├── helm/
+│   └── haproxy-keepalived/              # Helm chart
+│       ├── Chart.yaml
+│       ├── values.yaml
+│       └── templates/
+└── scripts/
+    ├── setup-environment.sh            # Environment setup
+    ├── deploy-haproxy.sh               # Deployment script
+    └── comprehensive-test.sh           # Testing script
+🛠️ Manual Installation Steps
+Step 1: Environment Setup
+bash# Make scripts executable
+chmod +x setup-environment.sh deploy-haproxy.sh comprehensive-test.sh
+
+# Run environment setup
+./setup-environment.sh
+Step 2: Deploy HAProxy with Keepalived
+bash# Navigate to project directory
+cd ansible-haproxy-k8s
+
+# Deploy using Ansible
+./deploy-haproxy.sh deploy
+
+# OR deploy using Helm
+./deploy-haproxy.sh helm
+Step 3: Test the Deployment
+bash# Run comprehensive tests
+./comprehensive-test.sh
+
+# OR run Ansible tests
+ansible-playbook playbooks/test-deployment.yml
+🔧 Configuration Options
+HAProxy Configuration
+Edit inventory/hosts.yml to customize:
+yamlvars:
+  haproxy_stats_port: 8404
+  haproxy_stats_user: admin
+  haproxy_stats_password: admin123
+  backend_servers:
+    - name: web1
+      address: "web1.default.svc.cluster.local"
+      port: 80
+      check: "check"
+    - name: web2
+      address: "web2.default.svc.cluster.local"
+      port: 80
+      check: "check"
+Keepalived Configuration
+yamlvars:
+  keepalived_interface: eth0
+  keepalived_vip: "192.168.49.100"
+  keepalived_router_id: 50
+🌐 Access Points
+After successful deployment:
+
+Load Balancer: http://$(minikube ip):30080
+HAProxy Stats: http://$(minikube ip):30404/stats
+
+Username: admin
+Password: admin123
+
+
+
+📊 Monitoring and Testing
+Basic Health Check
+bash# Check pod status
+kubectl get pods -n haproxy-system
+
+# Check services
+kubectl get svc -n haproxy-system
+
+# Check HAProxy logs
+kubectl logs -n haproxy-system -l app=haproxy
+
+# Check Keepalived logs
+kubectl logs -n haproxy-system -l app=keepalived
+Load Testing
+bash# Simple load test
+for i in {1..10}; do curl -s http://$(minikube ip):30080/; done
+
+# With Apache Bench (if installed)
+ab -n 100 -c 10 http://$(minikube ip):30080/
+High Availability Testing
+bash# Delete one HAProxy pod to
