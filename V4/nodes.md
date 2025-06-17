@@ -123,3 +123,10 @@ Update your inventory/hosts.yml like this:
     keepalived_vip: "192.168.10.200"
     keepalived_interface: "eth0"
 
+**
+sudo systemctl stop haproxy keepalived
+sudo systemctl disable haproxy keepalived
+sudo apt purge -y haproxy keepalived
+sudo rm -f /etc/haproxy/haproxy.cfg /etc/keepalived/keepalived.conf
+
+sudo journalctl -u keepalived
