@@ -112,3 +112,14 @@ inventory = inventory/hosts.yml
 host_key_checking = False
 stdout_callback = yaml
 
+
+****
+Error could not find files/haproxy.cnf 
+Update your inventory/hosts.yml like this:
+
+  vars:
+    haproxy_cfg_src: "{{ playbook_dir }}/../files/haproxy.cfg"
+    keepalived_cfg_src: "{{ playbook_dir }}/../files/keepalived.conf"
+    keepalived_vip: "192.168.10.200"
+    keepalived_interface: "eth0"
+
