@@ -1,0 +1,419 @@
+#!/bin/bash
+# deploy-haproxy.sh - Deploy HAProxy with Keepalived on physical nodes
+
+set -e
+
+NAMESPACE="default"
+PROJECT_DIR="$HOME/haproxy-keepalived-k8s"
+
+echo "========================================="
+echo "Deploying HAProxy with Keepalived"
+echo "========================================="
+
+# Check if project directory exists
+if [ ! -d "$PROJECT_DIR" ]; then
+    echo "Project directory not found. Run setup-environment.sh first."
+    exit 1
+fi
+
+cd "$PROJECT_DIR"
+
+# Create Ansible template files
+create_ansible_templates() {
+    echo "Creating Ansible templates..."
+
+    # HAProxy configuration template
+    cat > roles/haproxy-keepalived/templates/haproxy.cfg.j2 << 'EOF'
+global
+    daemon
+    maxconn 4096
+    log /dev/log local0 debug
+
+defaults
+    mode http
+    timeout connect 5000ms
+    timeout client 50000ms
+    timeout server 50000ms
+    option httplog
+    option dontlognull
+    option redispatch
+    retries 3
+    log global
+
+frontend http_front
+    bind *:80
+    default_backend http_back
+    log global
+
+backend http_back
+    balance roundrobin
+    option httpchk GET /
+    http-check expect status 200
+{% for server in backend_servers %}
+    server {{ server.name }} {{ server.address }}:{{ server.port }} {{ server.check }}
+{% endfor %}
+    log global
+
+listen stats
+    bind *:{{ haproxy_stats_port }}
+    stats enable
+    stats uri /stats
+    stats refresh 5s
+    stats auth {{ haproxy_stats_user }}:{{ haproxy_stats_password }}
+    log global
+EOF
+
+    # Keepalived configuration template
+    cat > roles/haproxy-keepalived/templates/keepalived.conf.j2 << 'EOF'
+global_defs {
+    router_id {{ ansible_hostname | default('LB_NODE') }}
+}
+
+vrrp_script chk_haproxy {
+    script "pidof haproxy"
+    interval 2
+    weight -2
+    fall 3
+    rise 2
+}
+
+vrrp_instance VI_1 {
+    state BACKUP
+    interface {{ keepalived_interface }}
+    virtual_router_id {{ keepalived_router_id }}
+    priority {{ keepalived_priority | default(100) }}
+    advert_int 1
+    authentication {
+        auth_type PASS
+        auth_pass {{ keepalived_password | default('changeme') }}
+    }
+    virtual_ipaddress {
+        {{ keepalived_vip }}
+    }
+    track_script {
+        chk_haproxy
+    }
+}
+EOF
+}
+
+# Create Ansible playbooks
+create_ansible_playbooks() {
+    echo "Creating Ansible playbooks..."
+
+    # Main deployment playbook
+    cat > playbooks/deploy-haproxy.yml << 'EOF'
+---
+- name: Deploy HAProxy and Keepalived on physical nodes
+  hosts: loadbalancers
+  become: yes
+  vars:
+    - keepalived_password: changeme123
+  tasks:
+    - name: Ensure HAProxy is installed
+      package:
+        name: haproxy
+        state: present
+
+    - name: Ensure Keepalived is installed
+      package:
+        name: keepalived
+        state: present
+
+    - name: Generate HAProxy configuration
+      template:
+        src: haproxy.cfg.j2
+        dest: /etc/haproxy/haproxy.cfg
+        mode: '0644'
+      notify: Restart HAProxy
+
+    - name: Generate Keepalived configuration
+      template:
+        src: keepalived.conf.j2
+        dest: /etc/keepalived/keepalived.conf
+        mode: '0644'
+      notify: Restart Keepalived
+
+    - name: Ensure HAProxy service is enabled and started
+      service:
+        name: haproxy
+        state: started
+        enabled: yes
+
+    - name: Ensure Keepalived service is enabled and started
+      service:
+        name: keepalived
+        state: started
+        enabled: yes
+
+    - name: Restart HAProxy
+      service:
+        name: haproxy
+        state: restarted
+
+    - name: Restart Keepalived
+      service:
+        name: keepalived
+        state: restarted
+  handlers:
+    - name: Restart HAProxy
+      service:
+        name: haproxy
+        state: restarted
+
+    - name: Restart Keepalived
+      service:
+        name: keepalived
+        state: restarted
+EOF
+}
+
+# Create role tasks
+create_role_tasks() {
+    echo "Creating role tasks..."
+
+    cat > roles/haproxy-keepalived/tasks/main.yml << 'EOF'
+---
+- name: Install required packages
+  package:
+    name:
+      - haproxy
+      - keepalived
+    state: present
+
+- name: Configure HAProxy
+  template:
+    src: haproxy.cfg.j2
+    dest: /etc/haproxy/haproxy.cfg
+    mode: '0644'
+  notify: Restart HAProxy
+
+- name: Configure Keepalived service
+  template:
+    src: keepalived.conf.j2
+    dest: /etc/keepalived/keepalived.conf
+    mode: '0644'
+  notify: Restart Keepalived
+
+- name: Ensure services are running
+  service:
+    name: "{{ item }}"
+    state: started
+      enabled: yes
+    loop:
+      - haproxy
+      - keepalived
+EOF
+
+    cat > roles/haproxy-keepalived/handlers/main.yml << 'EOF'
+---
+- name: Restart HAProxy
+  service:
+    name: haproxy
+    state: restarted
+
+- name: Restart Keepalived
+  service:
+    name: keepalived
+    state: restarted
+EOF
+
+    cat > roles/haproxy-keepalived/vars/main.yml << 'EOF'
+---
+keepalived_password: "changeme123"
+EOF
+}
+
+# Create Helm chart
+create_helm_chart() {
+    echo "Creating Helm templates..."
+
+    cat > helm/haproxy-keepalived/Chart.yaml << 'EOF'
+apiVersion: v2
+name: haproxy-keepalived
+description: HAProxy with Keepalived for High Availability on physical nodes
+type: application
+version: 0.1.0
+appVersion: "2.2"
+EOF
+
+    cat > helm/haproxy-keepalived/values.yaml << 'EOF'
+haproxy:
+  stats:
+    enabled: true
+    port: 8404
+    user: admin
+    password: admin123
+  backends:
+    - name: web1
+      address: web1.default.svc.cluster.local
+      port: 80
+      check: "check inter 2000ms rise 2 fall 3"
+    - name: web2
+      address: web2.default.svc.cluster.local
+      port: 80
+      check: "check inter 2000ms rise 2 fall 2"
+
+keepalived:
+  interface: eth0
+  vip: "192.168.1.200"
+  router_id: 100
+  password: "changeme123"
+EOF
+
+    # Create Helm templates
+    mkdir -p helm/haproxy-keepalived/templates
+
+    # Note: Since HAProxy and Keepalived are on physical nodes, Helm will only manage templates for reference
+    cat > helm/haproxy-keepalived/templates/haproxy-config.yaml << 'EOF'
+# This is a reference HAProxy configuration
+# Copy to /etc/haproxy/haproxy.cfg on physical nodes
+global
+    daemon
+    maxconn 4096
+      log /dev/log local0 debug
+
+defaults
+    mode http
+      timeout connect 5000ms
+      timeout client 50000ms
+      timeout server 50000ms
+      timeout httplog
+      option dontlognull
+      option redispatch
+      retries 3
+      log global
+
+frontend http_front
+      bind *:80
+      default_backend http_back
+      log global
+
+backend http_back
+      balance roundrobin
+      option httpchk GET /
+      http-check expect status 200
+{{- range .Values.haproxy.backends }}
+      server {{ .name }} {{ .address }}:{{ .port }} {{ .check }}
+{{- end }}
+      log global
+
+listen stats
+      bind *:{{ .Values.haproxy.stats.port }}
+      stats enable
+      stats uri /stats
+      stats refresh 5s
+      stats auth {{ .Values.haproxy.stats.user }}:{{ .Values.haproxy.stats.password }}
+      log global
+EOF
+
+    cat > helm/haproxy-keepalived/templates/keepalived-config.yaml << 'EOF"
+# This is a reference Keepalived configuration
+# Copy to /etc/keepalived/keepalived.conf on physical nodes
+global_defs {
+    router_id {{ .Values.keepalived.router_id }}
+}
+
+vrrp_script chk_haproxy {
+    script "pidof haproxy"
+    interval 2
+    weight -2
+    fall 2
+    rise 2
+}
+
+vrrp_instance VI_1 {
+    state BACKUP
+    interface {{ .Values.keepalived.interface }}
+    virtual_router_id {{ .Values.keepalived.router_id }}
+    priority 100
+    advert_int 1
+    authentication {
+        auth_type PASS
+        auth_pass {{ .Values.keepalived.password }}
+    }
+    virtual_ipaddress {
+        {{ .Values.keepalues.keptalived.vip }}
+    }
+    track_script {
+        chk_haproxy
+    }}
+EOF
+}
+
+# Ansible deployment function
+deploy() {
+    echo "Starting Ansible deployment..."
+
+    create_ansible_templates
+    create_ansible_playbooks
+    create_role_tasks
+
+    # Run deployment
+    echo "Running Ansible deployment..."
+    ansible-playbook playbooks/deploy-haproxy.yml -v
+
+    echo "Ansible deployment completed!"
+}
+
+# Helm deployment function (manual copy of configs)
+deploy_with_helm() {
+    echo "Deploying with Helm..."
+
+    create_helm_chart
+
+    # Render Helm templates
+    echo "Rendering Helm template files..."
+    helm template haproxy-keepalived ./helm/haproxy-keepalived \
+        --namespace default > rendered_templates.yaml
+
+    # Copy configurations to physical nodes
+    for host in $(ansible-inventory --list | jq -r '.loadbalancers.hosts[].host'); do
+        echo "Copying configurations to $host..."
+        scp -i ~/.ssh/id_rsa rendered/haproxy-keepalived/templates/haproxy-config.yaml $host:/etc/haproxy/haproxy.cfg
+        scp -i ~/.ssh/id_rsa rendered_templates/haproxy/templates/keepalived-config.yaml $host:/etc/keepalived/keepalived.conf
+        ssh -i ~/.ssh/id_rsa $host "systemctl restart haproxy && systemctl restart keepalived"
+    done
+
+    echo "Helm-based configuration applied!"
+    echo "Access HAProxy at: http://192.168.1.200"
+    echo "Access Stats at: http://192.168.1.200:8404/stats (admin/admin123)"
+}
+
+# Cleanup function
+cleanup() {
+    echo "Cleaning up..."
+
+    for host in $(ansible-inventory --list | jq -r '.loadbalancers.hosts[].ansible_host'); do
+        echo "Cleaning up $host..."
+        ssh -i ~/.ssh/id_rsa $host "systemctl stop haproxy; systemctl stop keepalived; rm -f /etc/haproxy/haproxy.cfg /etc/keepalived/keepalived.conf"
+    done
+
+    kubectl delete deployment,service web1 web2 --ignore-not-found=true -n default
+    echo "Cleanup completed!"
+}
+
+# Usage function
+usage() {
+    echo "Usage: $0 [deploy|helm|cleanup]"
+    echo "  deploy  - Deploy using Ansible"
+    echo "  helm    - Deploy using Helm templates"
+    echo "  cleanup - Clean up resources"
+    exit 1
+}
+
+# Main execution
+case "${1:-deploy}" in
+    deploy)
+        deploy
+        ;;
+    helm)
+        deploy_with_helm
+        ;;
+    cleanup)
+        cleanup
+        ;;
+    *)
+        usage
+        ;;
+esac
