@@ -2,6 +2,9 @@ $ curl -fsSL -o get_helm.sh https://raw.githubusercontent.com/helm/helm/main/scr
 $ chmod 700 get_helm.sh
 $ ./get_helm.sh
 
+ansible-playbook -i inventory/hosts.yml playbooks/setup-prerequisites.yml
+
+
 HAProxy on Kubernetes (via Helm):
 
 helm install haproxy ./helm/haproxy --namespace haproxy-system --create-namespace
