@@ -86,4 +86,21 @@ Suggested Diagnostic Command
 helm uninstall haproxy --namespace haproxy-system
 helm install haproxy ./helm/haproxy --namespace haproxy-system --create-namespace --debug --dry-run
 
+************************
+Uninstall the Helm Release (HAProxy in Kubernetes)
+uninstall 
+helm uninstall haproxy --namespace haproxy-system
+
+2. Delete the Namespace
+kubectl delete namespace haproxy-system
+
+3. Remove Backend Services (if created)
+kubectl delete deployment web1 web2 --namespace default
+kubectl delete service web1 web2 --namespace default
+
+
+Helm is designed to deploy applications into Kubernetes clusters only.
+ansible-playbook -i inventory/hosts.yml playbooks/deploy-haproxy.yml
+ansible-playbook -i inventory/hosts.yml playbooks/deploy-keepalived.yml
+
 
