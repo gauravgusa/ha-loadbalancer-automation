@@ -55,3 +55,35 @@ playbooks/setup-prerequisites.yml
 
     - debug:
         msg: "Installed Helm version: {{ helm_version.stdout }}"
+
+
+Resources Are Not Being Created
+check helm actually intalled
+helm get manifest haproxy --namespace haproxy-system
+
+Inspect what is running on namespace
+kubectl get all -n haproxy-system
+kubectl get configmaps -n haproxy-system
+If the above returns nothing, Helm may have rendered, but Kubernetes rejected them silently.
+
+kubectl describe deployment -n haproxy-system
+kubectl get events -n haproxy-system
+Look for errors like "no matches for kind", "invalid fields", etc.
+
+ConfigMap or Volume Errors in Templates
+In our HAProxy Helm chart, we use this volume mount:
+volumeMounts:
+  - name: config
+    mountPath: /usr/local/etc/haproxy/haproxy.cfg
+    subPath: haproxy.cfg
+This must match:
+volumes:
+  - name: config
+    configMap:
+      name: {{ include "haproxy.fullname" . }}-config
+
+Suggested Diagnostic Command
+helm uninstall haproxy --namespace haproxy-system
+helm install haproxy ./helm/haproxy --namespace haproxy-system --create-namespace --debug --dry-run
+
+
