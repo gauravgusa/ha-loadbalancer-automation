@@ -130,3 +130,31 @@ sudo apt purge -y haproxy keepalived
 sudo rm -f /etc/haproxy/haproxy.cfg /etc/keepalived/keepalived.conf
 
 sudo journalctl -u keepalived
+
+
+****
+keepalived.service failed because service did not take all the steps required by its unit configuration
+1. Check if Keepalived Is Installed
+
+dpkg -l | grep keepalived
+
+2. Fix the Ansible Role
+Ansible didn't refresh apt properly
+Or it skipped the install due to when or become issues
+
+- name: Ensure apt cache is up-to-date
+  apt:
+    update_cache: yes
+
+- name: Install Keepalived
+  apt:
+    name: keepalived
+    state: present
+
+3. check the interface name
+   ip a
+
+4. Ensure /etc/keepalived/keepalived.conf exists and is valid.
+Run this to test it:
+sudo keepalived -n -l -f /etc/keepalived/keepalived.conf
+
