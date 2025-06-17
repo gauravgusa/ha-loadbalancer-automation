@@ -103,4 +103,12 @@ Helm is designed to deploy applications into Kubernetes clusters only.
 ansible-playbook -i inventory/hosts.yml playbooks/deploy-haproxy.yml
 ansible-playbook -i inventory/hosts.yml playbooks/deploy-keepalived.yml
 
+Error : role not found
+Solution B: Add ansible.cfg to Set Roles Path
+In your project root, create a file named ansible.cfg:
+[defaults]
+roles_path = ./roles
+inventory = inventory/hosts.yml
+host_key_checking = False
+stdout_callback = yaml
 
