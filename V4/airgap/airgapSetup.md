@@ -66,3 +66,22 @@ backend_servers:
   - ip: 192.168.10.212
     port: 80
   deb_dir: /opt/os_packages/ubuntu_22.04   # <--- THIS IS REQUIRED
+
+
+Also add playbooks/deploy-keepalived.yml
+- name: Install Keepalived in airgap environment
+  hosts: keepalived_nodes
+  become: yes
+  vars_files:
+    - ../inventory/group_vars/all.yml
+  roles:
+    - keepalived
+
+ deploy-haproxy.yml
+ - name: Install HAProxy in airgap environment
+  hosts: haproxy_nodes
+  become: yes
+  vars_files:
+    - ../inventory/group_vars/all.yml
+  roles:
+    - haproxy
