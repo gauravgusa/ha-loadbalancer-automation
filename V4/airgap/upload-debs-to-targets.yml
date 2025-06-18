@@ -1,0 +1,15 @@
+- name: Upload .deb files to remote machines
+  hosts: all
+  become: yes
+  tasks:
+    - name: Create destination directory on remote machine
+      file:
+        path: /opt/os_packages/ubuntu_22.04
+        state: directory
+        mode: '0755'
+
+    - name: Copy .deb files to remote machine
+      copy:
+        src: os_packages/ubuntu_22.04/
+        dest: /opt/os_packages/ubuntu_22.04/
+        mode: '0644'
