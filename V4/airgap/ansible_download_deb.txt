@@ -1,0 +1,90 @@
+Project Structure
+
+ansible_project/
+├── download_debs.yml
+└── os_packages/
+    └── ubuntu-22.04/
+
+
+1. Create the Directory Structure
+mkdir -p ansible_project/os_packages/ubuntu-22.04
+cd ansible_project
+
+
+2. Create the Ansible Playbook
+Create a file named download_debs.yml inside ansible_project:
+
+---
+- name: Download .deb files for haproxy and keepalived (and their dependencies)
+  hosts: localhost
+  gather_facts: no
+  vars:
+    target_applications:
+      - haproxy
+      - keepalived
+    target_dir: "{{ playbook_dir }}/os_packages/ubuntu-22.04"
+
+  tasks:
+    - name: Ensure target directory exists
+      ansible.builtin.file:
+        path: "{{ target_dir }}"
+        state: directory
+        mode: '0755'
+
+    - name: Ensure apt-rdepends is installed
+      ansible.builtin.apt:
+        name: apt-rdepends
+        state: present
+        update_cache: yes
+      become: yes
+
+    - name: Clean out target directory before downloading
+      ansible.builtin.file:
+        path: "{{ target_dir }}"
+        state: absent
+      ignore_errors: yes
+
+    - name: Re-create target directory
+      ansible.builtin.file:
+        path: "{{ target_dir }}"
+        state: directory
+        mode: '0755'
+
+    - name: Gather dependencies for each application
+      ansible.builtin.shell: |
+        apt-rdepends {{ item }} 2>/dev/null | grep -v "^ " | grep -v "^Reverse Depends:" | sort -u
+      register: dep_output
+      loop: "{{ target_applications }}"
+      changed_when: false
+
+    - name: Set unique list of packages to download
+      ansible.builtin.set_fact:
+        all_packages: "{{ dep_output.results | map(attribute='stdout_lines') | list | flatten | unique }}"
+
+    - name: Download .deb files for all packages
+      ansible.builtin.shell: |
+        cd {{ target_dir }} && apt-get download {{ item }}
+      loop: "{{ all_packages }}"
+      args:
+        warn: false
+      register: download_results
+      failed_when: false
+
+    - name: Report download summary
+      ansible.builtin.debug:
+        msg: |
+          Downloaded {{ item.item }}: {{ 'Success' if item.rc == 0 else 'Failed' }}
+      loop: "{{ download_results.results }}"
+
+
+
+3. How to Run the Playbook
+
+Install Ansible (if not already installed):
+sudo apt update
+sudo apt install ansible
+
+Run the playbook:
+cd ansible_project
+ansible-playbook download_debs.yml
+
