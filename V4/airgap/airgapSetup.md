@@ -47,3 +47,21 @@ You should reach one of the backend servers (defined in group_vars/all.yml as 19
     Use journalctl -u haproxy or journalctl -u keepalived on targets.
     Use ip addr to verify VIP presence.
     Ensure backend servers (web1, web2) are up and serving on port 80.
+
+
+all.yml
+haproxy_version: "2.4"
+keepalived_version: "2.2"
+deb_dir: "/opt/os_packages/ubuntu_22.04"
+pip_base_dir: "/opt/pip_packages"
+pip_ansible_dir: "{{ pip_base_dir }}/ansible"
+pip_kubernetes_dir: "{{ pip_base_dir }}/kubernetes"
+haproxy_cfg_src: files/haproxy.cfg
+keepalived_interface: "eth0"
+keepalived_vip: "192.168.10.200"
+
+backend_servers:
+  - ip: 192.168.10.211
+    port: 80
+  - ip: 192.168.10.212
+    port: 80
