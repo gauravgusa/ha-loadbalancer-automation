@@ -65,3 +65,4 @@ backend_servers:
     port: 80
   - ip: 192.168.10.212
     port: 80
+  deb_dir: /opt/os_packages/ubuntu_22.04   # <--- THIS IS REQUIRED
