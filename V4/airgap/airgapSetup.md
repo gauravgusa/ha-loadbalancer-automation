@@ -85,3 +85,15 @@ Also add playbooks/deploy-keepalived.yml
     - ../inventory/group_vars/all.yml
   roles:
     - haproxy
+  
+*****
+group_vars/all.yml:
+haproxy_cfg_src: "{{ playbook_dir }}/../files/haproxy.cfg"
+
+playbook_dir
+copy:
+  src: "{{ playbook_dir }}/../files/haproxy.cfg"
+  dest: /etc/haproxy/haproxy.cfg
+  owner: root
+  group: root
+  mode: '0644'
