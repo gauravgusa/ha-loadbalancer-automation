@@ -1,0 +1,33 @@
+    log-format "%ci:%cp [%tr] %ft %b/%s %TR/%Tw/%Tc/%Tr/%Ta %ST %B %CC %CS %tsc %ac/%fc/%bc/%sc/%rc %sq/%bq %hr %hs %{+Q}r backend_server_ip=%bi backend_server_port=%bp"
+    log-format "%ci:%cp [%tr] %ft %b/%s %TR/%Tw/%Tc/%Tr/%Ta %ST %B %CC %CS %tsc %ac/%fc/%bc/%sc/%rc %sq/%bq %hr %{capture.res.hdr(0)} "
+
+
+Explanation of the log-format:
+
+The log-format directive allows you to specify the exact content and order of your log entries. You use "sample fetches" to retrieve specific pieces of information.
+
+%ci: Client IP address.
+%cp: Client port.
+[%tr]: Request accept time.
+%ft: Frontend name.
+%b: Backend name.
+%s: Server name.
+%TR: Total request time.
+%Tw: Time spent in waiting queue.
+%Tc: Time spent connecting to the server.
+%Tr: Response time from server.
+%Ta: Active time of the request.
+%ST: HTTP status code.
+%B: Total bytes sent to the client.
+%CC: Captured request cookies (if any).
+%CS: Captured response cookies (if any).
+%tsc: Total sessions processed.
+%ac: Active connections.
+%fc: Frontend connections.
+%bc: Backend connections.
+%sc: Server connections.
+%rc: Retried connections.
+%sq: Server queue.
+%bq: Backend queue.
+%hr: All captured request headers.
+%{capture.res.hdr(0)}: This is the key part for your request. It fetches the first captured response header. Since we used capture response header X-Backend-IP, this will now contain the value of that header. If you capture multiple headers, the index (0, 1, 2, etc.) will correspond to the order in which you defined them.
