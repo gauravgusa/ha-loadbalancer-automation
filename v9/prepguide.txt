@@ -1,0 +1,96 @@
+HAProxy & Keepalived Cluster Installation Guide
+1. Prerequisites
+Linux hosts for load balancers and backend servers.
+
+SSH access to all target hosts.
+
+Python and Ansible installed on the control node.
+
+The following directory structure (from your Ansible project):
+
+text
+ansible-lbhosts-airgap-ssl-complete/
+├── inventory/
+│   ├── group_vars/
+│   │   └── all.yml
+│   └── host.yml
+├── playbooks/
+│   ├── deploy-keepalived.yml
+│   └── deploy-haproxy.yml
+├── deployment.cfg
+└── bootstrap.sh
+2. Prepare Your Configuration
+2.1. Edit deployment.cfg
+Fill in your environment’s IPs and network details in deployment.cfg:
+
+text
+FLOATING_IP=10.168.10.101
+PRIMARY_IP=10.168.10.102
+SECONDARY_IP=10.168.10.103
+HAPROXY_PORT=9999
+INTERFACE=ens0012
+WORKERNODE1_IP=10.168.10.104
+WORKERNODE2_IP=10.168.10.105
+WORKERNODE3_IP=10.168.10.106
+2.2. Prepare Inventory Templates
+Ensure that inventory/group_vars/all.yml and inventory/host.yml contain placeholders matching your deployment.cfg variables, such as:
+
+{{ FLOATING_IP }}
+
+{{ PRIMARY_IP }}
+
+{{ SECONDARY_IP }}
+
+{{ HAPROXY_PORT }}
+
+{{ INTERFACE }}
+
+{{ WORKERNODE1_IP }}, etc.
+
+For hostnames, use {{ lbhost1 }} and {{ lbhost2 }} in host.yml.
+
+3. Installation Steps
+3.1. Make the Bootstrap Script Executable
+bash
+chmod +x bootstrap.sh
+3.2. Run the Bootstrap Script
+bash
+./bootstrap.sh
+This script will:
+
+Load variables from deployment.cfg.
+
+Replace placeholders in inventory/group_vars/all.yml and inventory/host.yml with actual values using sed.
+
+Run Ansible playbooks to install and configure Keepalived and HAProxy:
+
+ansible-playbook -i inventory/host.yml playbooks/deploy-keepalived.yml
+
+ansible-playbook -i inventory/host.yml playbooks/deploy-haproxy.yml
+
+Check and print the status of both haproxy and keepalived services.
+
+3.3. Verify Service Status
+The script will automatically run:
+
+bash
+systemctl status haproxy
+systemctl status keepalived
+Review the output to ensure both services are active (running).
+
+4. Post-Installation
+Access HAProxy on the floating IP and configured port (e.g., http://10.168.10.101:9999).
+
+Check the HAProxy stats page (if enabled) at http://<FLOATING_IP>:<STATS_PORT>/stats.
+
+5. Troubleshooting
+If you encounter errors, check the Ansible output and system logs on the target hosts:
+
+/var/log/haproxy.log
+
+/var/log/messages or /var/log/syslog
+
+Ensure all variables in deployment.cfg are set and match the placeholders in your YAML files.
+
+Summary
+This guide provides a robust, repeatable process to deploy a highly available HAProxy load balancer cluster with Keepalived using Ansible automation. The bootstrap.sh script automates configuration templating and deployment, ensuring consistency and minimizing manual intervention.
