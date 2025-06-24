@@ -1,14 +1,14 @@
-
-{% set lb_ips = [lbhost1_ip, lbhost2_ip] %}
+{% set all_lb_ips = [lbhost1_ip, lbhost2_ip] %}
 {% set current_ip = ansible_host %}
-{% set peer_ip = lb_ips | difference([current_ip]) | first %}
-{% set is_primary = (current_ip == lbhost1_ip) %}
+{% set peer_ip = all_lb_ips | difference([current_ip]) | first %}
+{% set current_index = all_lb_ips.index(current_ip) %}
+{% set is_master = (current_index == 0) %}
 
 vrrp_instance VI_1 {
-    state {{ is_primary | ternary('MASTER', 'BACKUP') }}
-    interface {{ keepalived_interface }}
+    state {{ is_master | ternary('MASTER', 'BACKUP') }}
+    interface {{ keepalived_interface | default('eth0') }}
     virtual_router_id 51
-    priority {{ is_primary | ternary(150, 100) }}
+    priority {{ is_master | ternary(150, 100) }}
     advert_int 1
     unicast_src_ip {{ current_ip }}
     unicast_peer {
@@ -19,7 +19,7 @@ vrrp_instance VI_1 {
         auth_pass {{ keepalived_auth_pass | default('SecurePass123!') }}
     }
     virtual_ipaddress {
-        {{ keepalived_vip }}
+        {{ keepalived_vip | default('192.168.10.200') }}
     }
     track_script {
         chk_haproxy
