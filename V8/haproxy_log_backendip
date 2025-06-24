@@ -1,0 +1,52 @@
+global
+  log /dev/log local0
+  daemon
+  maxconn 2048
+
+defaults
+  log     global
+  mode    http
+  option  httplog
+  timeout connect 5000ms
+  timeout client  50000ms
+  timeout server  50000ms
+
+frontend http-in
+  bind *:80
+  # Capture X-Backend-IP header and store in variable
+  http-request set-var(txn.backend_ip) req.hdr(X-Backend-IP)
+  # Define custom log format including backend IP
+  log-format "%ci:%cp [%t] %ft %b/%s %Tq/%Tw/%Tc/%Tr/%Tt %st %B %cc %cs %tsc %ac/%fc/%bc/%sc/%rc %sq/%bq %hr %hsl backend_ip:%[var(txn.backend_ip)]"
+  default_backend servers
+
+backend servers
+  balance roundrobin
+{% for server in backend_servers %}
+  server web{{ loop.index }} {{ server.ip }}:{{ server.port }} check
+{% endfor %}
+
+frontend https_frontend
+  bind *:9888 ssl crt /etc/haproxy/certs/ha.pem
+  mode http
+  acl is_ssl ssl_fc
+  http-request add-header X-Forwarded-Proto https
+  http-request add-header X-Forwarded-Port 9888
+  # Capture X-Backend-IP header and store in variable
+  http-request set-var(txn.backend_ip) req.hdr(X-Backend-IP)
+  # Use same custom log format as http-in
+  log-format "%ci:%cp [%t] %ft %b/%s %Tq/%Tw/%Tc/%Tr/%Tt %st %B %cc %cs %tsc %ac/%fc/%bc/%sc/%rc %sq/%bq %hr %hsl backend_ip:%[var(txn.backend_ip)]"
+  default_backend my_app_backend
+
+backend my_app_backend
+  mode http
+  balance roundrobin
+{% for server in secure_backend_servers %}
+  server worker{{ loop.index }} {{ server.ip }}:{{ server.port }} check ssl verify none
+{% endfor %}
+
+listen stats
+  bind *:8404
+  stats enable
+  stats uri /stats
+  stats refresh 30s
+  stats auth admin:admin
