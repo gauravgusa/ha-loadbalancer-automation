@@ -1,13 +1,18 @@
 
+{% set lb_ips = [lbhost1_ip, lbhost2_ip] %}
+{% set current_ip = ansible_host %}
+{% set peer_ip = lb_ips | difference([current_ip]) | first %}
+{% set is_primary = (current_ip == lbhost1_ip) %}
+
 vrrp_instance VI_1 {
-    state {{ (ansible_host == lbhost1_ip) | ternary('MASTER', 'BACKUP') }}
+    state {{ is_primary | ternary('MASTER', 'BACKUP') }}
     interface {{ keepalived_interface }}
     virtual_router_id 51
-    priority {{ (ansible_host == lbhost1_ip) | ternary(150, 100) }}
+    priority {{ is_primary | ternary(150, 100) }}
     advert_int 1
-    unicast_src_ip {{ ansible_host }}
+    unicast_src_ip {{ current_ip }}
     unicast_peer {
-        {{ (ansible_host == lbhost1_ip) | ternary(lbhost2_ip, lbhost1_ip) }}
+        {{ peer_ip }}
     }
     authentication {
         auth_type PASS
