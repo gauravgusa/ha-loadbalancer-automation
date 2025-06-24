@@ -31,10 +31,9 @@ frontend https_frontend
   acl is_ssl ssl_fc
   http-request add-header X-Forwarded-Proto https
   http-request add-header X-Forwarded-Port 9888
-  # Capture X-Backend-IP header and store in variable
-  http-request set-var(txn.backend_ip) req.hdr(X-Backend-IP)
+
   # Use same custom log format as http-in
-  log-format "%ci:%cp [%t] %ft %b/%s %Tq/%Tw/%Tc/%Tr/%Tt %st %B %cc %cs %tsc %ac/%fc/%bc/%sc/%rc %sq/%bq %hr %hsl backend_ip:%[var(txn.backend_ip)]"
+  log-format "%ci:%cp [%t] %ft %b/%s %Tq/%Tw/%Tc/%Tr/%Tt %st %B %cc %cs %tsc %ac/%fc/%bc/%sc/%rc %sq/%bq %hr %hsl backend_ip:%si"
   default_backend my_app_backend
 
 backend my_app_backend
