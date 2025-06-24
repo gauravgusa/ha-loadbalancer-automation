@@ -1,0 +1,37 @@
+#!/bin/bash
+
+set -e
+
+# 1. Create the deployment kit folder
+DEPLOYKIT="app-2.1.0-deploymentkit"
+APPFOLDER="app-2.1.0"
+CERT_SOURCE="ha.pem"
+CERT_DEST="$APPFOLDER/ansible/certificates/ha.pem"
+DEPLOYMENT_CFG_SOURCE="deployment.cfg"
+DEPLOYMENT_CFG_DEST="$APPFOLDER/deployment.cfg"
+BOOTSTRAP_SCRIPT="$APPFOLDER/bootstrap.sh"
+
+mkdir -p "$DEPLOYKIT"
+
+# 2. Replace ha.pem
+cp "$CERT_SOURCE" "$CERT_DEST"
+
+# 3. Replace deployment.cfg
+cp "$DEPLOYMENT_CFG_SOURCE" "$DEPLOYMENT_CFG_DEST"
+
+# 4. Run bootstrap.sh
+bash "$BOOTSTRAP_SCRIPT"
+
+# 5. Read IPs from deployment.cfg (assuming lines like: haproxy_ip=1.2.3.4, keepalived_ip=5.6.7.8)
+HAPROXY_IP=$(grep -E '^haproxy_ip=' "$DEPLOYMENT_CFG_DEST" | cut -d'=' -f2)
+KEEPALIVED_IP=$(grep -E '^keepalived_ip=' "$DEPLOYMENT_CFG_DEST" | cut -d'=' -f2)
+
+# 6. Test HAProxy endpoint (example: curl the HAProxy IP)
+echo "Testing HAProxy endpoint at $HAPROXY_IP..."
+curl -v "http://$HAPROXY_IP" || echo "HAProxy endpoint test failed"
+
+# 7. Print last 50 lines from HAProxy logs, highlight matching IPs
+echo "Last 50 lines from /var/log/haproxy.log (highlighting matching IPs):"
+tail -n 50 /var/log/haproxy.log | \
+  grep --color=always -E "$HAPROXY_IP|$KEEPALIVED_IP|$"
+
