@@ -1,1 +1,68 @@
+deployment.cfg
+FLOATING_IP: 10.168.10.101
+PRIMARY_IP:  10.168.10.102
+SECONDARY_IP: 10.168.10.103
+HAPROXY_PORT: 9999
+INTERFACE: ens0012
+WORKERNODE1_IP : 10.168.10.104
+WORKERNODE2_IP : 10.168.10.105
+WORKERNODE3_IP : 10.168.10.106
 
+bootstraup.sh
+#!/bin/bash
+set -e
+
+# 1. Load deployment.cfg into environment variables
+if [ ! -f deployment.cfg ]; then
+  echo "deployment.cfg not found!"
+  exit 1
+fi
+
+# Export all variables from deployment.cfg
+export $(grep -v '^#' deployment.cfg | xargs)
+
+# 2. Replace placeholders in inventory/group_vars/all.yml
+ALL_YML="inventory/group_vars/all.yml"
+HOST_YML="inventory/host.yml"
+
+if [ ! -f "$ALL_YML" ] || [ ! -f "$HOST_YML" ]; then
+  echo "YAML files not found in inventory/group_vars or inventory!"
+  exit 1
+fi
+
+# Replace all placeholders in all.yml
+sed -i \
+  -e "s/{{ *FLOATING_IP *}}/$FLOATING_IP/g" \
+  -e "s/{{ *PRIMARY_IP *}}/$PRIMARY_IP/g" \
+  -e "s/{{ *SECONDARY_IP *}}/$SECONDARY_IP/g" \
+  -e "s/{{ *HAPROXY_PORT *}}/$HAPROXY_PORT/g" \
+  -e "s/{{ *INTERFACE *}}/$INTERFACE/g" \
+  -e "s/{{ *WORKERNODE1_IP *}}/$WORKERNODE1_IP/g" \
+  -e "s/{{ *WORKERNODE2_IP *}}/$WORKERNODE2_IP/g" \
+  -e "s/{{ *WORKERNODE3_IP *}}/$WORKERNODE3_IP/g" \
+  "$ALL_YML"
+
+# Replace all placeholders in host.yml
+sed -i \
+  -e "s/{{ *lbhost1 *}}/$PRIMARY_IP/g" \
+  -e "s/{{ *lbhost2 *}}/$SECONDARY_IP/g" \
+  -e "s/{{ *FLOATING_IP *}}/$FLOATING_IP/g" \
+  "$HOST_YML"
+
+echo "Placeholders replaced in $ALL_YML and $HOST_YML."
+
+# 3. Run Ansible playbooks
+echo "Running Keepalived playbook..."
+ansible-playbook -i inventory/host.yml playbooks/deploy-keepalived.yml
+
+echo "Running HAProxy playbook..."
+ansible-playbook -i inventory/host.yml playbooks/deploy-haproxy.yml
+
+# 4. Check service status
+echo "Checking HAProxy status..."
+systemctl status haproxy --no-pager
+
+echo "Checking Keepalived status..."
+systemctl status keepalived --no-pager
+
+echo "Bootstrap complete."
