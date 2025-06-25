@@ -66,3 +66,52 @@ echo "Checking Keepalived status..."
 systemctl status keepalived --no-pager
 
 echo "Bootstrap complete."
+
+
+
+******
+HAProxy & Keepalived Cluster: Configuration Variables
+Below is a concise explanation of each variable in deployment.cfg for your HAProxy + Keepalived cluster setup.
+
+Variable	Purpose	Example Value
+FLOATING_IP	Virtual IP address managed by Keepalived. Automatically fails over between nodes. Clients connect here.	10.168.10.101
+PRIMARY_IP	Static IP of the active load balancer node (initial holder of FLOATING_IP).	10.168.10.102
+SECONDARY_IP	Static IP of the standby load balancer node (takes over FLOATING_IP if primary fails).	10.168.10.103
+HAPROXY_PORT	Port where HAProxy listens for client traffic (HTTP/HTTPS).	9999
+INTERFACE	Network interface (e.g., eth0, ens192) used for floating IP binding and VRRP communication.	ens0012
+WORKERNODE*_IP	IPs of backend application servers. HAProxy forwards traffic to these.	10.168.10.104–.106
+Key Relationships
+Keepalived:
+
+Uses PRIMARY_IP and SECONDARY_IP for VRRP communication.
+
+Binds FLOATING_IP to INTERFACE on the active node.
+
+Fails over FLOATING_IP to standby if primary becomes unreachable.
+
+HAProxy:
+
+Listens on HAPROXY_PORT (e.g., :9999) for client requests.
+
+Forwards traffic to WORKERNODE*_IP addresses (backend servers).
+
+Uses FLOATING_IP as the client-facing endpoint.
+
+High Availability Flow:
+
+text
+graph LR  
+  Client --> FLOATING_IP  
+  FLOATING_IP -->|Active| PRIMARY_IP  
+  PRIMARY_IP -->|Traffic| WORKERNODE1_IP  
+  PRIMARY_IP -->|Traffic| WORKERNODE2_IP  
+  FLOATING_IP -.->|Failover| SECONDARY_IP  
+  SECONDARY_IP -->|Traffic| WORKERNODE3_IP  
+If the primary node fails, FLOATING_IP moves to SECONDARY_IP within seconds.
+
+Why These Values Matter
+FLOATING_IP: Ensures continuous client access during node failures.
+INTERFACE: Must match the physical/virtual NIC where VRRP runs.
+WORKERNODE*_IP: Must point to live backend servers (e.g., web apps, databases).
+HAPROXY_PORT: Must be open in firewalls for client access.
+Note: All IPs must be in the same subnet. INTERFACE name must match ip a output on
