@@ -1,0 +1,120 @@
+graph TB
+    subgraph Internet ["🌐 Internet Traffic"]
+        direction TB
+        Users[Client Requests] 
+        DNS[DNS Resolution<br/>lb.example.com → 192.168.1.100]
+    end
+    
+    subgraph HA_Layer ["High Availability Layer"]
+        direction TB
+        VIP[🎯 Virtual IP Address<br/>192.168.1.100<br/>Floating IP]
+        
+        subgraph Keepalived_Cluster ["Keepalived VRRP Cluster"]
+            direction LR
+            KA_Master[👑 Keepalived Master<br/>Priority: 100<br/>State: MASTER<br/>VRID: 51]
+            KA_Backup[⏳ Keepalived Backup<br/>Priority: 90<br/>State: BACKUP<br/>VRID: 51]
+            KA_Master -.->|VRRP Advertisements<br/>Multicast 224.0.0.18| KA_Backup
+        end
+    end
+    
+    subgraph LB_Layer ["Load Balancer Layer"]
+        direction TB
+        
+        subgraph LB_Master ["🟢 Active HAProxy Node"]
+            HAProxy_M[HAProxy Master<br/>192.168.1.101<br/>Stats: :8404<br/>Config Sync]
+            HAProxy_M_Config[Frontend: *:80,443<br/>Backend: k8s-workers<br/>Balance: roundrobin<br/>Health Checks: ✓]
+        end
+        
+        subgraph LB_Backup ["🟡 Standby HAProxy Node"]
+            HAProxy_B[HAProxy Backup<br/>192.168.1.102<br/>Stats: :8404<br/>Config Sync]
+            HAProxy_B_Config[Frontend: *:80,443<br/>Backend: k8s-workers<br/>Balance: roundrobin<br/>Health Checks: ✓]
+        end
+    end
+    
+    subgraph K8s_Layer ["🎡 Kubernetes Cluster"]
+        direction TB
+        
+        subgraph Control_Plane ["Control Plane (Optional)"]
+            direction LR
+            CP1[Master 1<br/>192.168.1.110<br/>API Server: 6443]
+            CP2[Master 2<br/>192.168.1.111<br/>API Server: 6443]
+            CP3[Master 3<br/>192.168.1.112<br/>API Server: 6443]
+        end
+        
+        subgraph Worker_Nodes ["Worker Nodes Pool"]
+            direction TB
+            W1[🔷 Worker Node 1<br/>192.168.1.121<br/>NodePort: 30000-32767<br/>kubelet, kube-proxy<br/>Status: Ready]
+            W2[🔷 Worker Node 2<br/>192.168.1.122<br/>NodePort: 30000-32767<br/>kubelet, kube-proxy<br/>Status: Ready]
+            W3[🔷 Worker Node 3<br/>192.168.1.123<br/>NodePort: 30000-32767<br/>kubelet, kube-proxy<br/>Status: Ready]
+            W4[🔷 Worker Node 4<br/>192.168.1.124<br/>NodePort: 30000-32767<br/>kubelet, kube-proxy<br/>Status: Ready]
+            W5[🔷 Worker Node 5<br/>192.168.1.125<br/>NodePort: 30000-32767<br/>kubelet, kube-proxy<br/>Status: Ready]
+        end
+    end
+    
+    subgraph Monitoring ["📊 Monitoring & Health"]
+        direction LR
+        HealthCheck[Health Check Endpoints<br/>/healthz, /ready<br/>HTTP 200 OK]
+        Metrics[Metrics Collection<br/>HAProxy Stats<br/>Keepalived Status<br/>Node Exporter]
+    end
+    
+    %% Traffic Flow
+    Users --> DNS
+    DNS --> VIP
+    VIP -->|Active Traffic Flow| KA_Master
+    KA_Master --> HAProxy_M
+    VIP -.->|Failover Path| KA_Backup
+    KA_Backup -.-> HAProxy_B
+    
+    %% Load Balancing
+    HAProxy_M -->|HTTP/HTTPS<br/>TCP Passthrough<br/>SSL Termination| W1
+    HAProxy_M --> W2
+    HAProxy_M --> W3
+    HAProxy_M --> W4
+    HAProxy_M --> W5
+    
+    HAProxy_B -.->|Standby Connections| W1
+    HAProxy_B -.-> W2
+    HAProxy_B -.-> W3
+    HAProxy_B -.-> W4
+    HAProxy_B -.-> W5
+    
+    %% Optional Control Plane Load Balancing
+    HAProxy_M -.->|Optional: API LB<br/>Port 6443| CP1
+    HAProxy_M -.-> CP2
+    HAProxy_M -.-> CP3
+    
+    %% Health Monitoring
+    HAProxy_M --> HealthCheck
+    HAProxy_B --> HealthCheck
+    HealthCheck --> Metrics
+    W1 --> HealthCheck
+    W2 --> HealthCheck
+    W3 --> HealthCheck
+    W4 --> HealthCheck
+    W5 --> HealthCheck
+    
+    %% Configuration Sync
+    HAProxy_M -.->|Config Sync<br/>rsync/git| HAProxy_B
+    
+    %% Styling
+    classDef internet fill:#e8f4fd,stroke:#1e88e5,stroke-width:2px,color:#000
+    classDef vip fill:#fff3e0,stroke:#ff9800,stroke-width:3px,color:#000
+    classDef keepalived_master fill:#e8f5e8,stroke:#4caf50,stroke-width:2px,color:#000
+    classDef keepalived_backup fill:#fff8e1,stroke:#ffc107,stroke-width:2px,color:#000
+    classDef haproxy_active fill:#e8f5e8,stroke:#2e7d32,stroke-width:2px,color:#000
+    classDef haproxy_standby fill:#fff8e1,stroke:#f57c00,stroke-width:2px,color:#000
+    classDef workers fill:#e3f2fd,stroke:#1976d2,stroke-width:1.5px,color:#000
+    classDef control fill:#f3e5f5,stroke:#7b1fa2,stroke-width:1.5px,color:#000
+    classDef monitoring fill:#fce4ec,stroke:#c2185b,stroke-width:1.5px,color:#000
+    classDef config fill:#f1f8e9,stroke:#689f38,stroke-width:1px,color:#000
+    
+    class Users,DNS internet
+    class VIP vip
+    class KA_Master keepalived_master
+    class KA_Backup keepalived_backup
+    class HAProxy_M haproxy_active
+    class HAProxy_B haproxy_standby
+    class W1,W2,W3,W4,W5 workers
+    class CP1,CP2,CP3 control
+    class HealthCheck,Metrics monitoring
+    class HAProxy_M_Config,HAProxy_B_Config config
