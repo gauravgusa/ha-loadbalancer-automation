@@ -1,0 +1,560 @@
+This guide provides comprehensive instructions for deploying a highly available load balancer solution using HAProxy and Keepalived. This setup is designed to distribute application traffic across five Kubernetes worker nodes, ensuring robust performance and fault tolerance. The installation process leverages `bootstrap.sh` and `deployment.cfg` for automated configuration and deployment.
+
+High-Availability Load Balancer Installation Guide for Kubernetes with HAProxy and Keepalived
+Introduction
+This guide provides comprehensive instructions for deploying a highly available load balancer solution using HAProxy and Keepalived. This setup is designed to distribute application traffic across five Kubernetes worker nodes, ensuring robust performance and fault tolerance. The installation process leverages `bootstrap.sh` and `deployment.cfg` for automated configuration and deployment.
+
+Purpose: The primary objective of this guide is to detail the steps required to establish a resilient load balancing infrastructure that enhances the availability and scalability of applications running on a Kubernetes cluster.
+
+Target Audience: This document is intended for system administrators, DevOps engineers, and technical personnel responsible for deploying and managing Kubernetes environments.
+
+System Architecture Overview:
+The solution involves two load balancer nodes (Primary and Secondary) utilizing Keepalived for Virtual Router Redundancy Protocol (VRRP) to manage a floating IP address. HAProxy, running on these nodes, will distribute incoming client traffic to a backend pool of five Kubernetes worker nodes.
+System Requirements
+To ensure a successful deployment, the following system requirements must be met for both load balancer nodes and the Kubernetes worker nodes:
+
+2.1 Load Balancer Nodes (Primary and Secondary):
+Operating System: Ubuntu 22.04 (as indicated by `deb_dir: "/opt/os_packages/ubuntu_22.04"` in `all.yml`).
+CPU: Minimum 2 Cores
+RAM: Minimum 4 GB
+Disk Space: Minimum 50 GB
+Network Interfaces: At least one network interface for standard communication and for floating IP binding and VRRP communication (e.g., `INTERFACE` variable in `deployment.cfg`).
+Connectivity: Network connectivity to all Kubernetes worker nodes and external clients.
+User: A user with `sudo` privileges (e.g., `ansible_user: ubuntu`).
+2.2 Kubernetes Worker Nodes:
+Operating System: Compatible with your Kubernetes cluster (e.g., Ubuntu 22.04).
+CPU: As per your application's requirements.
+RAM: As per your application's requirements.
+Disk Space: As per your application's requirements.
+Connectivity: Network connectivity to the HAProxy load balancer nodes.
+Application Port: The `WORKERNODE_PORT` must be open and accessible on all worker nodes for HAProxy to forward traffic.
+2.3 Client Requirements:
+Hardware: Laptop or personal computer.
+Software: SSH client (e.g., MobaXterm, PuTTY, or a standard terminal with SSH).
+<!-- end list -->
+Preparation
+Prior to initiating the installation, essential configuration and file preparations are required.
+
+3.1 Directory Structure:
+
+Ensure the following directory structure is in place, especially for the `Application-lb-1.0` directory:
+Application-lb-1.0/
+├── ansible/
+│   ├── certificates/
+│   │   └── ha.pem
+│   ├── group_vars/
+│   │   └── all.yml
+│   ├── inventory/
+│   │   └── hosts.yml
+│   └── playbooks/
+│       ├── deploy-haproxy.yml
+│       └── deploy-keepalived.yml
+└── deployment.cfg
+3.2 `deployment.cfg` Configuration:
+
+The `deployment.cfg` file is crucial for customizing the load balancer deployment. Populate this file with the specific IP addresses and network details for your environment.
+Deployment.cfg
+
+FQDN=your_loadbalancer_fqdn.example.com
+FLOATING_IP=192.168.1.100       # Virtual IP address managed by Keepalived
+PRIMARY_IP=192.168.1.10         # Static IP of the primary load balancer node
+SECONDARY_IP=192.168.1.11       # Static IP of the secondary load balancer node
+HAPROXY_PORT=80                 # HAProxy listens for client traffic on this port
+INTERFACE=eth0                  # Network interface for floating IP and VRRP
+WORKERNODE1_IP=10.0.0.1         # IP of Kubernetes Worker Node 1
+WORKERNODE2_IP=10.0.0.2         # IP of Kubernetes Worker Node 2
+WORKERNODE3_IP=10.0.0.3         # IP of Kubernetes Worker Node 3
+WORKERNODE4_IP=10.0.0.4         # IP of Kubernetes Worker Node 4
+WORKERNODE5_IP=10.0.0.5         # IP of Kubernetes Worker Node 5
+WORKERNODE_PORT=8080            # Port on worker nodes where application listens
+Variables Explanation from `deployment.cfg`:
+`FQDN`: Fully Qualified Domain Name for your load balancer.
+`FLOATING_IP`: The virtual IP address managed by Keepalived. This IP automatically fails over between the primary and secondary nodes, providing high availability.
+`PRIMARY_IP`: The static IP address of the active load balancer node. This node is the initial holder of the floating IP.
+`SECONDARY_IP`: The static IP address of the standby load balancer node. This node takes over the floating IP if the primary node fails.
+`HAPROXY_PORT`: The port on which HAProxy listens for incoming client traffic (e.g., 80 for HTTP, 443 for HTTPS).
+`INTERFACE`: The network interface used for binding the floating IP and for Virtual Router Redundancy Protocol (VRRP) communication between the load balancer nodes.
+`WORKERNODE*_IP`: The IP addresses of your Kubernetes worker nodes. HAProxy forwards traffic to these nodes.
+`WORKERNODE_PORT`: The port on the worker nodes where your Kubernetes application is exposed and listening for connections.
+3.3 `ha.pem` Certificate:
+
+Copy your SSL/TLS certificate (`ha.pem`) into the `Application-lb-1.0/ansible/certificates/` directory. This certificate will be utilized by the HAProxy configuration (specifically `roles/haproxy/templates/haproxy.cfg.j2`) to bind with `*:9998` for HTTPS frontend traffic.
+Installation Steps
+The installation process is automated through the `bootstrap.sh` script, which orchestrates the configuration of `all.yml` and `hosts.yml` and then executes the Ansible playbooks.
+
+4.1 `bootstrap.sh` Script Execution:
+
+The `bootstrap.sh` script performs the following critical actions:
+Reads `deployment.cfg`: It reads the values defined in your `deployment.cfg` file.
+Search and Replace: It searches for placeholder values in `all.yml` (within `group_vars`) and `hosts.yml` (within `inventory`) and replaces them with the corresponding values from `deployment.cfg`. This dynamically configures Ansible for your specific environment.
+Example `all.yml` modifications:
+# ... other variables ...
+keepalived_interface: "{{INTERFACE}}"  # Replaced with value from deployment.cfg
+keepalived_vip: {{FLOATING_IP}}       # Replaced with value from deployment.cfg
+secure_backend_servers:
+  - ip: "{{WORKERNODE1_IP}}"
+    Port: {{WORKERNODE_PORT}}
+  - ip: "{{WORKERNODE2_IP}}"
+    Port: {{WORKERNODE_PORT}}
+  - ip: "{{WORKERNODE3_IP}}"
+    Port: {{WORKERNODE_PORT}}
+  - ip: "{{WORKERNODE4_IP}}"
+    Port: {{WORKERNODE_PORT}}
+  - ip: "{{WORKERNODE5_IP}}"
+    Port: {{WORKERNODE_PORT}}
+# ...
+Example `hosts.yml` modifications:
+all:
+    children:
+        lb_nodes:
+           lbhost1:
+                  ansible_hosts: {{PRIMARY_IP}}   # Replaced with value from deployment.cfg
+           lbhost2:
+                  ansible_hosts: {{SECONDARY_IP}} # Replaced with value from deployment.cfg
+    vars:
+         ansible_user: ubuntu
+         lbhost1_ip : {PRIMARY_IP}
+         lbhost2_ip : {SECONDARY_IP}
+         lbhost1_priority : 150
+         lbhost2_priority : 100
+         lbhost1_sttate : MASTER
+         lbhost2_sttate : BACKUP
+
+
+
+
+High-Availability Load Balancer Installation Guide for Kubernetes with HAProxy and Keepalived1. Introduction
+
+This guide provides comprehensive instructions for deploying a highly available load balancer solution using HAProxy and Keepalived. This setup is designed to distribute application traffic across five Kubernetes worker nodes, ensuring robust performance and fault tolerance. The installation process leverages `bootstrap.sh` and `deployment.cfg` for automated configuration and deployment.
+
+Purpose: The primary objective of this guide is to detail the steps required to establish a resilient load balancing infrastructure that enhances the availability and scalability of applications running on a Kubernetes cluster.
+
+Target Audience: This document is intended for system administrators, DevOps engineers, and technical personnel responsible for deploying and managing Kubernetes environments.
+
+System Architecture Overview:
+The solution involves two load balancer nodes (Primary and Secondary) utilizing Keepalived for Virtual Router Redundancy Protocol (VRRP) to manage a floating IP address. HAProxy, running on these nodes, will distribute incoming client traffic to a backend pool of five Kubernetes worker nodes.2. System Requirements
+
+To ensure a successful deployment, the following system requirements must be met for both load balancer nodes and the Kubernetes worker nodes:
+
+2.1 Load Balancer Nodes (Primary and Secondary):
+Operating System: Ubuntu 22.04 (as indicated by `deb_dir: "/opt/os_packages/ubuntu_22.04"` in `all.yml`).
+CPU: Minimum 2 Cores
+RAM: Minimum 4 GB
+Disk Space: Minimum 50 GB
+Network Interfaces: At least one network interface for standard communication and for floating IP binding and VRRP communication (e.g., `INTERFACE` variable in `deployment.cfg`).
+Connectivity: Network connectivity to all Kubernetes worker nodes and external clients.
+User: A user with `sudo` privileges (e.g., `ansible_user: ubuntu`).
+2.2 Kubernetes Worker Nodes:
+Operating System: Compatible with your Kubernetes cluster (e.g., Ubuntu 22.04).
+CPU: As per your application's requirements.
+RAM: As per your application's requirements.
+Disk Space: As per your application's requirements.
+Connectivity: Network connectivity to the HAProxy load balancer nodes.
+Application Port: The `WORKERNODE_PORT` must be open and accessible on all worker nodes for HAProxy to forward traffic.
+2.3 Client Requirements:
+Hardware: Laptop or personal computer.
+Software: SSH client (e.g., MobaXterm, PuTTY, or a standard terminal with SSH).
+3. Preparation
+
+Prior to initiating the installation, essential configuration and file preparations are required.
+
+3.1 Directory Structure:
+
+Ensure the following directory structure is in place, especially for the `Application-lb-1.0` directory:
+Application-lb-1.0/
+├── ansible/
+│   ├── certificates/
+│   │   └── ha.pem
+│   ├── group_vars/
+│   │   └── all.yml
+│   ├── inventory/
+│   │   └── hosts.yml
+│   └── playbooks/
+│       ├── deploy-haproxy.yml
+│       └── deploy-keepalived.yml
+└── deployment.cfg
+3.2 `deployment.cfg` Configuration:
+
+The `deployment.cfg` file is crucial for customizing the load balancer deployment. Populate this file with the specific IP addresses and network details for your environment.
+Deployment.cfg
+
+FQDN=your_loadbalancer_fqdn.example.com
+FLOATING_IP=192.168.1.100       # Virtual IP address managed by Keepalived
+PRIMARY_IP=192.168.1.10         # Static IP of the primary load balancer node
+SECONDARY_IP=192.168.1.11       # Static IP of the secondary load balancer node
+HAPROXY_PORT=80                 # HAProxy listens for client traffic on this port
+INTERFACE=eth0                  # Network interface for floating IP and VRRP
+WORKERNODE1_IP=10.0.0.1         # IP of Kubernetes Worker Node 1
+WORKERNODE2_IP=10.0.0.2         # IP of Kubernetes Worker Node 2
+WORKERNODE3_IP=10.0.0.3         # IP of Kubernetes Worker Node 3
+WORKERNODE4_IP=10.0.0.4         # IP of Kubernetes Worker Node 4
+WORKERNODE5_IP=10.0.0.5         # IP of Kubernetes Worker Node 5
+WORKERNODE_PORT=8080            # Port on worker nodes where application listens
+Variables Explanation from `deployment.cfg`:
+`FQDN`: Fully Qualified Domain Name for your load balancer.
+`FLOATING_IP`: The virtual IP address managed by Keepalived. This IP automatically fails over between the primary and secondary nodes, providing high availability.
+`PRIMARY_IP`: The static IP address of the active load balancer node. This node is the initial holder of the floating IP.
+`SECONDARY_IP`: The static IP address of the standby load balancer node. This node takes over the floating IP if the primary node fails.
+`HAPROXY_PORT`: The port on which HAProxy listens for incoming client traffic (e.g., 80 for HTTP, 443 for HTTPS).
+`INTERFACE`: The network interface used for binding the floating IP and for Virtual Router Redundancy Protocol (VRRP) communication between the load balancer nodes.
+`WORKERNODE*_IP`: The IP addresses of your Kubernetes worker nodes. HAProxy forwards traffic to these nodes.
+`WORKERNODE_PORT`: The port on the worker nodes where your Kubernetes application is exposed and listening for connections.
+3.3 `ha.pem` Certificate:
+
+Copy your SSL/TLS certificate (`ha.pem`) into the `Application-lb-1.0/ansible/certificates/` directory. This certificate will be utilized by the HAProxy configuration (specifically `roles/haproxy/templates/haproxy.cfg.j2`) to bind with `*:9998` for HTTPS frontend traffic.4. Installation Steps
+
+The installation process is automated through the `bootstrap.sh` script, which orchestrates the configuration of `all.yml` and `hosts.yml` and then executes the Ansible playbooks.
+
+4.1 `bootstrap.sh` Script Execution:
+
+The `bootstrap.sh` script performs the following critical actions:
+Reads `deployment.cfg`: It reads the values defined in your `deployment.cfg` file.
+Search and Replace: It searches for placeholder values in `all.yml` (within `group_vars`) and `hosts.yml` (within `inventory`) and replaces them with the corresponding values from `deployment.cfg`. This dynamically configures Ansible for your specific environment.
+Example `all.yml` modifications:
+# ... other variables ...
+keepalived_interface: "{{INTERFACE}}"  # Replaced with value from deployment.cfg
+keepalived_vip: {{FLOATING_IP}}       # Replaced with value from deployment.cfg
+secure_backend_servers:
+  - ip: "{{WORKERNODE1_IP}}"
+    Port: {{WORKERNODE_PORT}}
+  - ip: "{{WORKERNODE2_IP}}"
+    Port: {{WORKERNODE_PORT}}
+  - ip: "{{WORKERNODE3_IP}}"
+    Port: {{WORKERNODE_PORT}}
+  - ip: "{{WORKERNODE4_IP}}"
+    Port: {{WORKERNODE_PORT}}
+  - ip: "{{WORKERNODE5_IP}}"
+    Port: {{WORKERNODE_PORT}}
+# ...
+Example `hosts.yml` modifications:
+all:
+    children:
+        lb_nodes:
+           lbhost1:
+                  ansible_hosts: {{PRIMARY_IP}}   # Replaced with value from deployment.cfg
+           lbhost2:
+                  ansible_hosts: {{SECONDARY_IP}} # Replaced with value from deployment.cfg
+    vars:
+         ansible_user: ubuntu
+         lbhost1_ip : {PRIMARY_IP}
+         lbhost2_ip : {SECONDARY_IP}
+         lbhost1_priority : 150
+         lbhost2_priority : 100
+         lbhost1_sttate : MASTER
+         lbhost2_sttate : BACKUP
+Invokes Ansible Playbooks: After updating the configuration files, the script navigates into the `Application-lb-1.0` directory and executes the Ansible playbooks in the following order:
+Deploy Keepalived:
+cd Application-lb-1.0
+ansible-playbook -i inventory
+***************************************
+
+
+
+II
+
+*************
+Introduction
+This guide provides step-by-step instructions for deploying a high-availability load balancer solution using HAProxy and Keepalived for Kubernetes environments. The setup creates a redundant load balancing layer that automatically fails over between primary and secondary nodes, ensuring continuous service availability.
+The solution includes:
+HAProxy: High-performance load balancer for distributing traffic to Kubernetes worker nodes
+Keepalived: VRRP (Virtual Router Redundancy Protocol) implementation for automatic failover
+Ansible: Automated deployment and configuration management
+SSL/TLS Support: HTTPS frontend with certificate management
+System Requirements
+Load Balancer Nodes (Primary and Secondary)
+Operating System: Ubuntu 22.04 LTS
+CPU: Minimum 2 cores, Recommended 4+ cores
+Memory: Minimum 4GB RAM, Recommended 8GB+
+Storage: Minimum 20GB available disk space
+Network: Dedicated network interface for VRRP communication
+Privileges: Root or sudo access
+Kubernetes Worker Nodes
+Connectivity: Network connectivity to load balancer nodes
+Service Ports: Accessible on configured worker node ports
+Health Checks: Services should respond to health check endpoints
+Network Requirements
+Floating IP: Virtual IP address for client access
+Static IPs: Dedicated static IP addresses for both load balancer nodes
+Network Segmentation: Proper VLAN or subnet configuration
+Firewall Rules: Open required ports for HAProxy, Keepalived, and SSH
+Client Requirements
+Development/Management Machine
+Operating System: Windows, macOS, or Linux
+SSH Client: One of the following:
+Linux/macOS: Built-in SSH client
+Windows: MobaXterm, PuTTY, or Windows Subsystem for Linux (WSL)
+Network Access: Connectivity to load balancer nodes via SSH (port 22)
+Ansible: Ansible installed locally (if running from client machine)
+Required Software
+# For Ubuntu/Debian clients
+sudo apt update
+sudo apt install ansible ssh-client
+
+# For RHEL/CentOS clients
+sudo yum install ansible openssh-clients
+
+# For macOS clients
+brew install ansible
+
+Pre-Installation Setup
+1. SSL Certificate Preparation
+Ensure you have a valid SSL certificate file named ha.pem containing both the certificate and private key:
+# Verify certificate format
+openssl x509 -in ha.pem -text -noout
+openssl rsa -in ha.pem -check
+
+2. Network Configuration
+Assign static IP addresses to both load balancer nodes
+Reserve a floating IP address for the virtual IP
+Configure network routing and firewall rules
+Ensure VRRP multicast traffic is allowed
+3. SSH Key Setup
+# Generate SSH key pair (if not already available)
+ssh-keygen -t rsa -b 4096 -f ~/.ssh/id_rsa
+
+# Copy public key to both load balancer nodes
+ssh-copy-id ubuntu@<PRIMARY_IP>
+ssh-copy-id ubuntu@<SECONDARY_IP>
+
+Installation Steps
+Step 1: Prepare Directory Structure
+# Create project directory
+mkdir -p ha-loadbalancer
+cd ha-loadbalancer
+
+# Create deployment configuration
+cat > deployment.cfg << EOF
+FQDN=lb.example.com
+FLOATING_IP=192.168.1.100
+PRIMARY_IP=192.168.1.101
+SECONDARY_IP=192.168.1.102
+HAPROXY_PORT=80
+SSL_PORT=443
+INTERFACE=eth0
+WORKERNODE1_IP=192.168.1.201
+WORKERNODE2_IP=192.168.1.202
+WORKERNODE3_IP=192.168.1.203
+WORKERNODE4_IP=192.168.1.204
+WORKERNODE5_IP=192.168.1.205
+WORKERNODE_PORT=30080
+EOF
+
+Step 2: Setup Application Structure
+# Create application directory structure
+mkdir -p Application-lb-1.0/ansible/{certificates,group_vars,inventory,playbooks}
+
+# Copy SSL certificate
+cp /path/to/your/ha.pem Application-lb-1.0/ansible/certificates/ha.pem
+chmod 600 Application-lb-1.0/ansible/certificates/ha.pem
+
+Step 3: Create Ansible Configuration Files
+group_vars/all.yml
+---
+# HAProxy and Keepalived versions
+haproxy_version: "2.4"
+keepalived_version: "2.2"
+
+# Package directory
+deb_dir: "/opt/os_packages/ubuntu_22.04"
+
+# Keepalived configuration
+keepalived_interface: "{{INTERFACE}}"
+keepalived_vip: "{{FLOATING_IP}}"
+
+# Backend server configuration
+secure_backend_servers:
+  - ip: "{{WORKERNODE1_IP}}"
+    port: "{{WORKERNODE_PORT}}"
+  - ip: "{{WORKERNODE2_IP}}"
+    port: "{{WORKERNODE_PORT}}"
+  - ip: "{{WORKERNODE3_IP}}"
+    port: "{{WORKERNODE_PORT}}"
+  - ip: "{{WORKERNODE4_IP}}"
+    port: "{{WORKERNODE_PORT}}"
+  - ip: "{{WORKERNODE5_IP}}"
+    port: "{{WORKERNODE_PORT}}"
+
+# SSL Configuration
+ssl_certificate_path: "/etc/haproxy/cert/ha.pem"
+ssl_port: 443
+
+inventory/hosts.yml
+---
+all:
+  children:
+    lb_nodes:
+      hosts:
+        lbhost1:
+          ansible_host: "{{PRIMARY_IP}}"
+        lbhost2:
+          ansible_host: "{{SECONDARY_IP}}"
+  vars:
+    ansible_user: ubuntu
+    lbhost1_ip: "{{PRIMARY_IP}}"
+    lbhost2_ip: "{{SECONDARY_IP}}"
+    lbhost1_priority: 150
+    lbhost2_priority: 100
+    lbhost1_state: MASTER
+    lbhost2_state: BACKUP
+
+Step 4: Make Bootstrap Script Executable
+chmod +x bootstrap.sh
+
+Step 5: Run Deployment
+# Execute the bootstrap script
+./bootstrap.sh
+
+Verification
+Service Status Verification
+# Check HAProxy status on both nodes
+ansible all -i Application-lb-1.0/ansible/inventory/hosts.yml -m shell -a "systemctl status haproxy --no-pager"
+
+# Check Keepalived status on both nodes
+ansible all -i Application-lb-1.0/ansible/inventory/hosts.yml -m shell -a "systemctl status keepalived --no-pager"
+
+# Check if floating IP is active
+ansible all -i Application-lb-1.0/ansible/inventory/hosts.yml -m shell -a "ip addr show"
+
+Connectivity Tests
+# Test HTTP connectivity
+curl -I http://<FLOATING_IP>:<HAPROXY_PORT>
+
+# Test HTTPS connectivity
+curl -I -k https://<FLOATING_IP>:443
+
+# Test load balancing
+for i in {1..10}; do
+    curl -s http://<FLOATING_IP>:<HAPROXY_PORT> | grep -o "worker[0-9]*"
+done
+
+Validation
+Failover Testing
+# Simulate primary node failure
+ansible lbhost1 -i Application-lb-1.0/ansible/inventory/hosts.yml -m shell -a "systemctl stop keepalived"
+
+# Verify floating IP moved to secondary node
+ping <FLOATING_IP>
+
+# Check which node has the floating IP
+ansible all -i Application-lb-1.0/ansible/inventory/hosts.yml -m shell -a "ip addr show | grep <FLOATING_IP>"
+
+# Restore primary node
+ansible lbhost1 -i Application-lb-1.0/ansible/inventory/hosts.yml -m shell -a "systemctl start keepalived"
+
+Performance Testing
+# Install Apache Bench for load testing
+sudo apt install apache2-utils
+
+# Perform load test
+ab -n 1000 -c 10 http://<FLOATING_IP>:<HAPROXY_PORT>/
+
+# Monitor HAProxy stats (if enabled)
+curl http://<FLOATING_IP>:8080/stats
+
+Troubleshooting
+Common Issues and Solutions
+1. Keepalived Not Starting
+# Check Keepalived logs
+journalctl -u keepalived -f
+
+# Common fixes:
+# - Verify interface name in configuration
+# - Check VRRP multicast permissions
+# - Ensure floating IP is not already in use
+
+2. HAProxy Backend Servers Unreachable
+# Check HAProxy logs
+journalctl -u haproxy -f
+
+# Test backend connectivity
+ansible all -i Application-lb-1.0/ansible/inventory/hosts.yml -m shell -a "nc -zv <WORKERNODE_IP> <WORKERNODE_PORT>"
+
+# Verify firewall rules
+ansible all -i Application-lb-1.0/ansible/inventory/hosts.yml -m shell -a "iptables -L"
+
+3. SSL Certificate Issues
+# Verify certificate validity
+openssl x509 -in Application-lb-1.0/ansible/certificates/ha.pem -text -noout
+
+# Check certificate permissions
+ls -la Application-lb-1.0/ansible/certificates/ha.pem
+
+# Test SSL connectivity
+openssl s_client -connect <FLOATING_IP>:443
+
+4. Ansible Connectivity Issues
+# Test SSH connectivity
+ansible all -i Application-lb-1.0/ansible/inventory/hosts.yml -m ping
+
+# Check SSH keys
+ssh-add -l
+
+# Verify sudo permissions
+ansible all -i Application-lb-1.0/ansible/inventory/hosts.yml -m shell -a "sudo -l"
+
+Log File Locations
+HAProxy: /var/log/haproxy.log
+Keepalived: /var/log/syslog or journalctl -u keepalived
+System: /var/log/syslog
+Variable Reference
+deployment.cfg Variables
+Variable
+Description
+Example
+FQDN
+Fully Qualified Domain Name for the load balancer
+lb.example.com
+FLOATING_IP
+Virtual IP address managed by Keepalived, automatically fails over between nodes
+192.168.1.100
+PRIMARY_IP
+Static IP of the active load balancer node, initial holder of floating IP
+192.168.1.101
+SECONDARY_IP
+Static IP of the standby load balancer, takes over floating IP if primary fails
+192.168.1.102
+HAPROXY_PORT
+Port where HAProxy listens for client HTTP traffic
+80
+SSL_PORT
+Port where HAProxy listens for client HTTPS traffic
+443
+INTERFACE
+Network interface used for floating IP binding and VRRP communication
+eth0
+WORKERNODE1_IP
+IP address of first Kubernetes worker node
+192.168.1.201
+WORKERNODE2_IP
+IP address of second Kubernetes worker node
+192.168.1.202
+WORKERNODE3_IP
+IP address of third Kubernetes worker node
+192.168.1.203
+WORKERNODE4_IP
+IP address of fourth Kubernetes worker node
+192.168.1.204
+WORKERNODE5_IP
+IP address of fifth Kubernetes worker node
+192.168.1.205
+WORKERNODE_PORT
+Port on worker nodes where HAProxy forwards traffic
+30080
+
+SSL Certificate Configuration
+The ha.pem certificate file is copied to Application-lb-1.0/ansible/certificates/ha.pem and utilized by the Ansible playbook in the HAProxy configuration template (roles/haproxy/templates/haproxy.cfg.j2). The certificate is configured in the HTTPS frontend to bind with *:443 ssl crt /etc/haproxy/cert/ha.pem.
+Network Architecture
+                   [Internet]
+                        |
+                 [Floating IP]
+                 192.168.1.100
+                   /        \
+          [Primary LB]    [Secondary LB]
+         192.168.1.101    192.168.1.102
+                   \        /
+                    [HAProxy]
+                   /   |   \
+         [Worker1]  [Worker2]  [Worker3]
+        192.168.1.201 192.168.1.202 192.168.1.203
+
+This configuration ensures high availability through automatic failover and load distribution across multiple Kubernetes worker nodes.
