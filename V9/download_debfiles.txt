@@ -1,24 +1,23 @@
 #!/bin/bash
 
-# HAProxy and Keepalived Offline Package Downloader
-# This script downloads all .deb files needed to install HAProxy and Keepalived
-# in an air-gapped environment
+# HAProxy and Keepalived DEB Files Downloader
+# Downloads all .deb files needed for offline installation
 
 set -euo pipefail
 
 # Configuration
-DOWNLOAD_DIR="./offline_packages"
+DOWNLOAD_DIR="./deb_packages"
 PACKAGES=("haproxy" "keepalived")
-TEMP_DIR="/tmp/apt-download-$$"
+TEMP_DIR="/tmp/deb-download-$$"
 
 # Colors for output
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
-NC='\033[0m' # No Color
+NC='\033[0m'
 
-# Logging function
+# Logging functions
 log() {
     echo -e "${BLUE}[$(date +'%Y-%m-%d %H:%M:%S')]${NC} $1"
 }
@@ -35,20 +34,20 @@ warning() {
     echo -e "${YELLOW}[WARNING]${NC} $1"
 }
 
-# Check if running as root or with sudo
+# Check if running as root
 check_privileges() {
     if [[ $EUID -ne 0 ]]; then
-        error "This script needs to be run as root or with sudo"
+        error "This script needs to be run as root or with sudo to update package lists"
         error "Usage: sudo $0"
         exit 1
     fi
 }
 
-# Check if required tools are available
+# Check required tools
 check_dependencies() {
     local missing_tools=()
     
-    for tool in apt-get apt-cache dpkg; do
+    for tool in apt-get apt-cache; do
         if ! command -v "$tool" &> /dev/null; then
             missing_tools+=("$tool")
         fi
@@ -56,7 +55,6 @@ check_dependencies() {
     
     if [[ ${#missing_tools[@]} -gt 0 ]]; then
         error "Missing required tools: ${missing_tools[*]}"
-        error "This script requires a Debian/Ubuntu system with apt package manager"
         exit 1
     fi
 }
@@ -65,225 +63,175 @@ check_dependencies() {
 update_package_lists() {
     log "Updating package lists..."
     if apt-get update > /dev/null 2>&1; then
-        success "Package lists updated successfully"
+        success "Package lists updated"
     else
         error "Failed to update package lists"
         exit 1
     fi
 }
 
-# Create directories
+# Setup directories
 setup_directories() {
-    log "Setting up directories..."
-    
-    # Create download directory
+    log "Creating download directory: $DOWNLOAD_DIR"
     mkdir -p "$DOWNLOAD_DIR"
-    
-    # Create temporary directory
     mkdir -p "$TEMP_DIR"
-    
-    success "Directories created: $DOWNLOAD_DIR"
 }
 
-# Get package dependencies recursively
-get_all_dependencies() {
+# Get package dependencies
+get_dependencies() {
     local package="$1"
-    local deps_file="$TEMP_DIR/${package}_deps.txt"
+    local deps_file="$TEMP_DIR/${package}_all_deps.txt"
     
     log "Resolving dependencies for $package..."
     
-    # Get dependencies using apt-cache
+    # Start with the main package
+    echo "$package" > "$deps_file"
+    
+    # Get direct dependencies
     apt-cache depends "$package" 2>/dev/null | \
         grep -E "^\s*(Depends|PreDepends):" | \
         awk '{print $2}' | \
         sed 's/[<>].*//g' | \
-        sort -u > "$deps_file"
+        grep -v '^$' | \
+        sort -u >> "$deps_file"
     
-    # Get recursive dependencies
-    local all_deps="$TEMP_DIR/all_deps_${package}.txt"
-    echo "$package" > "$all_deps"
+    # Get dependencies of dependencies (one level deep to avoid complexity)
+    local temp_deps="$TEMP_DIR/${package}_temp_deps.txt"
+    cp "$deps_file" "$temp_deps"
     
     while IFS= read -r dep; do
-        if [[ -n "$dep" && "$dep" != "$package" ]]; then
-            # Skip virtual packages and packages that don't exist
-            if apt-cache show "$dep" &>/dev/null; then
-                echo "$dep" >> "$all_deps"
-                # Get dependencies of dependencies (limited depth to avoid infinite loops)
-                apt-cache depends "$dep" 2>/dev/null | \
-                    grep -E "^\s*(Depends|PreDepends):" | \
-                    awk '{print $2}' | \
-                    sed 's/[<>].*//g' | \
-                    while IFS= read -r subdep; do
-                        if [[ -n "$subdep" ]] && apt-cache show "$subdep" &>/dev/null; then
-                            echo "$subdep" >> "$all_deps"
-                        fi
-                    done
+        if [[ -n "$dep" ]] && apt-cache show "$dep" &>/dev/null; then
+            apt-cache depends "$dep" 2>/dev/null | \
+                grep -E "^\s*(Depends|PreDepends):" | \
+                awk '{print $2}' | \
+                sed 's/[<>].*//g' | \
+                grep -v '^$' >> "$deps_file"
+        fi
+    done < "$temp_deps"
+    
+    # Remove duplicates and filter out packages that don't exist
+    sort -u "$deps_file" > "$temp_deps"
+    > "$deps_file"
+    
+    while IFS= read -r pkg; do
+        if [[ -n "$pkg" ]] && apt-cache show "$pkg" &>/dev/null; then
+            echo "$pkg" >> "$deps_file"
+        fi
+    done < "$temp_deps"
+    
+    local count
+    count=$(wc -l < "$deps_file")
+    success "Found $count packages for $package"
+}
+
+# Download .deb files
+download_deb_files() {
+    local package="$1"
+    local deps_file="$TEMP_DIR/${package}_all_deps.txt"
+    
+    log "Downloading .deb files for $package..."
+    
+    cd "$DOWNLOAD_DIR"
+    
+    local downloaded=0
+    local failed=0
+    
+    while IFS= read -r pkg; do
+        if [[ -n "$pkg" ]]; then
+            if apt-get download "$pkg" 2>/dev/null; then
+                ((downloaded++))
+                echo -n "."
+            else
+                ((failed++))
             fi
         fi
     done < "$deps_file"
     
-    # Remove duplicates and sort
-    sort -u "$all_deps" -o "$all_deps"
+    echo ""
+    success "Downloaded $downloaded .deb files for $package"
+    [[ $failed -gt 0 ]] && warning "$failed packages could not be downloaded"
     
-    local dep_count
-    dep_count=$(wc -l < "$all_deps")
-    success "Found $dep_count packages for $package (including dependencies)"
+    cd - > /dev/null
 }
 
-# Download packages
-download_packages() {
-    local package="$1"
-    local all_deps="$TEMP_DIR/all_deps_${package}.txt"
+# Remove duplicate packages (keep latest version)
+remove_duplicates() {
+    log "Removing duplicate packages..."
     
-    log "Downloading packages for $package..."
-    
-    # Change to download directory
     cd "$DOWNLOAD_DIR"
     
-    # Download packages without installing
-    local download_count=0
-    local failed_count=0
+    if ! ls *.deb 1> /dev/null 2>&1; then
+        warning "No .deb files found"
+        return
+    fi
     
-    while IFS= read -r pkg; do
-        if [[ -n "$pkg" ]]; then
-            log "Downloading $pkg..."
-            if apt-get download "$pkg" 2>/dev/null; then
-                ((download_count++))
-            else
-                warning "Failed to download $pkg (may be virtual package or already satisfied)"
-                ((failed_count++))
-            fi
+    # Group by package name and keep only the latest version
+    for pkg_name in $(ls *.deb | sed 's/_.*//g' | sort -u); do
+        local pkg_files
+        pkg_files=$(ls ${pkg_name}_*.deb 2>/dev/null | sort -V)
+        local pkg_count
+        pkg_count=$(echo "$pkg_files" | wc -l)
+        
+        if [[ $pkg_count -gt 1 ]]; then
+            # Remove all but the last (latest) version
+            echo "$pkg_files" | head -n -1 | xargs rm -f
         fi
-    done < "$all_deps"
-    
-    success "Downloaded $download_count packages for $package"
-    if [[ $failed_count -gt 0 ]]; then
-        warning "$failed_count packages failed to download"
-    fi
+    done
     
     cd - > /dev/null
 }
 
-# Generate installation script
-generate_install_script() {
-    local install_script="$DOWNLOAD_DIR/install_packages.sh"
+# Generate package summary
+generate_summary() {
+    local summary_file="$DOWNLOAD_DIR/download_summary.txt"
     
-    log "Generating installation script..."
+    log "Generating download summary..."
     
-    cat > "$install_script" << 'EOF'
-#!/bin/bash
-
-# Offline Installation Script for HAProxy and Keepalived
-# Generated by offline package downloader
-
-set -euo pipefail
-
-# Colors for output
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-BLUE='\033[0;34m'
-NC='\033[0m'
-
-log() {
-    echo -e "${BLUE}[$(date +'%Y-%m-%d %H:%M:%S')]${NC} $1"
+    {
+        echo "# HAProxy and Keepalived DEB Files Download Summary"
+        echo "# Generated on: $(date)"
+        echo "# System: $(lsb_release -d 2>/dev/null | cut -f2 || echo 'Unknown')"
+        echo ""
+        
+        cd "$DOWNLOAD_DIR"
+        
+        if ls *.deb 1> /dev/null 2>&1; then
+            echo "Downloaded Packages:"
+            echo "==================="
+            for deb in *.deb; do
+                local info
+                info=$(dpkg-deb -f "$deb" Package Version Architecture 2>/dev/null || echo "Unknown")
+                echo "$deb"
+            done | sort
+            
+            echo ""
+            echo "Statistics:"
+            echo "==========="
+            echo "Total packages: $(ls *.deb | wc -l)"
+            echo "Total size: $(du -sh . | cut -f1)"
+        else
+            echo "No packages downloaded"
+        fi
+        
+        cd - > /dev/null
+        
+    } > "$summary_file"
+    
+    success "Summary created: $summary_file"
 }
 
-error() {
-    echo -e "${RED}[ERROR]${NC} $1" >&2
-}
-
-success() {
-    echo -e "${GREEN}[SUCCESS]${NC} $1"
-}
-
-# Check if running as root
-if [[ $EUID -ne 0 ]]; then
-    error "This script needs to be run as root or with sudo"
-    exit 1
-fi
-
-# Get script directory
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-
-log "Installing packages from $SCRIPT_DIR..."
-
-# Install all .deb files
-if ls "$SCRIPT_DIR"/*.deb 1> /dev/null 2>&1; then
-    log "Installing .deb packages..."
-    if dpkg -i "$SCRIPT_DIR"/*.deb; then
-        success "All packages installed successfully"
-    else
-        error "Some packages failed to install, attempting to fix dependencies..."
-        apt-get install -f -y
-        success "Dependencies fixed"
-    fi
-else
-    error "No .deb files found in $SCRIPT_DIR"
-    exit 1
-fi
-
-# Verify installations
-log "Verifying installations..."
-
-if command -v haproxy &> /dev/null; then
-    success "HAProxy installed successfully"
-    haproxy -v
-else
-    error "HAProxy installation failed"
-fi
-
-if command -v keepalived &> /dev/null; then
-    success "Keepalived installed successfully"
-    keepalived --version
-else
-    error "Keepalived installation failed"
-fi
-
-log "Installation complete!"
-EOF
-
-    chmod +x "$install_script"
-    success "Installation script created: $install_script"
-}
-
-# Generate package list
-generate_package_list() {
-    local package_list="$DOWNLOAD_DIR/package_list.txt"
-    
-    log "Generating package list..."
-    
-    echo "# Package List - Generated on $(date)" > "$package_list"
-    echo "# Downloaded packages for HAProxy and Keepalived offline installation" >> "$package_list"
-    echo "" >> "$package_list"
-    
-    cd "$DOWNLOAD_DIR"
-    if ls *.deb 1> /dev/null 2>&1; then
-        for deb_file in *.deb; do
-            local pkg_info
-            pkg_info=$(dpkg-deb -I "$deb_file" | grep -E "^\s*Package:|^\s*Version:|^\s*Architecture:" | tr '\n' ' ')
-            echo "$deb_file - $pkg_info" >> "$package_list"
-        done
-    fi
-    cd - > /dev/null
-    
-    success "Package list created: $package_list"
-}
-
-# Cleanup function
+# Cleanup
 cleanup() {
-    log "Cleaning up temporary files..."
-    rm -rf "$TEMP_DIR"
+    [[ -d "$TEMP_DIR" ]] && rm -rf "$TEMP_DIR"
 }
 
-# Main execution
+# Main function
 main() {
-    log "Starting HAProxy and Keepalived offline package downloader..."
+    log "Starting DEB files download for HAProxy and Keepalived"
     
-    # Setup trap for cleanup
     trap cleanup EXIT
     
-    # Run checks
+    # Checks
     check_privileges
     check_dependencies
     
@@ -293,42 +241,28 @@ main() {
     
     # Process each package
     for package in "${PACKAGES[@]}"; do
-        log "Processing $package..."
-        get_all_dependencies "$package"
-        download_packages "$package"
+        get_dependencies "$package"
+        download_deb_files "$package"
     done
     
-    # Remove duplicate .deb files
+    # Cleanup and summary
+    remove_duplicates
+    generate_summary
+    
+    # Final summary
     cd "$DOWNLOAD_DIR"
-    if ls *.deb 1> /dev/null 2>&1; then
-        log "Removing duplicate packages..."
-        # Keep only the latest version of each package
-        for pkg in $(ls *.deb | sed 's/_.*//g' | sort -u); do
-            ls ${pkg}_*.deb | sort -V | head -n -1 | xargs -r rm -f
-        done
-    fi
+    local total_files total_size
+    total_files=$(ls *.deb 2>/dev/null | wc -l)
+    total_size=$(du -sh . 2>/dev/null | cut -f1)
     cd - > /dev/null
     
-    # Generate additional files
-    generate_install_script
-    generate_package_list
-    
-    # Summary
-    local total_packages
-    total_packages=$(ls "$DOWNLOAD_DIR"/*.deb 2>/dev/null | wc -l)
-    local total_size
-    total_size=$(du -sh "$DOWNLOAD_DIR" | cut -f1)
-    
-    success "Download completed successfully!"
     echo ""
-    echo "Summary:"
-    echo "  - Total packages downloaded: $total_packages"
-    echo "  - Total size: $total_size"
-    echo "  - Download directory: $DOWNLOAD_DIR"
+    success "Download completed!"
+    echo "  Files downloaded: $total_files"
+    echo "  Total size: $total_size"
+    echo "  Location: $DOWNLOAD_DIR"
     echo ""
-    echo "To install on air-gapped system:"
-    echo "  1. Copy the entire '$DOWNLOAD_DIR' directory to the target system"
-    echo "  2. Run: sudo $DOWNLOAD_DIR/install_packages.sh"
+    echo "You can now copy the '$DOWNLOAD_DIR' directory to your air-gapped system"
 }
 
 # Run main function
