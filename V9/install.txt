@@ -558,3 +558,6 @@ Network Architecture
         192.168.1.201 192.168.1.202 192.168.1.203
 
 This configuration ensures high availability through automatic failover and load distribution across multiple Kubernetes worker nodes.
+
+iface=$(ip -o link show | awk -F': ' '/state UP/ && $2 !~ /lo|vir|wl/ {print $2; exit}')
+echo "$iface"
