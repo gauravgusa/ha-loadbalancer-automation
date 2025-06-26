@@ -1,0 +1,64 @@
+graph TB
+    Users[Client Requests] 
+    DNS[DNS Resolution<br/>lb.example.com → 192.168.1.100]
+    VIP[Virtual IP Address<br/>192.168.1.100<br/>Floating IP]
+    KA_Master[Keepalived Master<br/>Priority: 100<br/>State: MASTER<br/>VRID: 51]
+    KA_Backup[Keepalived Backup<br/>Priority: 90<br/>State: BACKUP<br/>VRID: 51]
+    HAProxy_M[HAProxy Master<br/>192.168.1.101<br/>Stats: :8404]
+    HAProxy_M_Config[Frontend: *:80,443<br/>Backend: k8s-workers<br/>Balance: roundrobin]
+    HAProxy_B[HAProxy Backup<br/>192.168.1.102<br/>Stats: :8404]
+    HAProxy_B_Config[Frontend: *:80,443<br/>Backend: k8s-workers<br/>Balance: roundrobin]
+    CP1[Master 1<br/>192.168.1.110]
+    CP2[Master 2<br/>192.168.1.111]
+    CP3[Master 3<br/>192.168.1.112]
+    W1[Worker Node 1<br/>192.168.1.121]
+    W2[Worker Node 2<br/>192.168.1.122]
+    W3[Worker Node 3<br/>192.168.1.123]
+    W4[Worker Node 4<br/>192.168.1.124]
+    W5[Worker Node 5<br/>192.168.1.125]
+    HealthCheck[Health Checks<br/>/healthz, /ready]
+    Metrics[Metrics Collection<br/>HAProxy Stats]
+    
+    KA_Master -.->|VRRP Advertisements<br/>Multicast 224.0.0.18| KA_Backup
+    
+    %% Traffic Flow
+    Users --> DNS
+    DNS --> VIP
+    VIP --> KA_Master
+    KA_Master --> HAProxy_M
+    VIP -.-> KA_Backup
+    KA_Backup -.-> HAProxy_B
+    
+    %% Load Balancing
+    HAProxy_M --> W1
+    HAProxy_M --> W2
+    HAProxy_M --> W3
+    HAProxy_M --> W4
+    HAProxy_M --> W5
+    
+    HAProxy_B -.-> W1
+    HAProxy_B -.-> W2
+    HAProxy_B -.-> W3
+    HAProxy_B -.-> W4
+    HAProxy_B -.-> W5
+    
+    %% Control Plane Load Balancing
+    HAProxy_M -.-> CP1
+    HAProxy_M -.-> CP2
+    HAProxy_M -.-> CP3
+    
+    %% Health Monitoring
+    HAProxy_M --> HealthCheck
+    HAProxy_B --> HealthCheck
+    HealthCheck --> Metrics
+    W1 --> HealthCheck
+    W2 --> HealthCheck
+    W3 --> HealthCheck
+    W4 --> HealthCheck
+    W5 --> HealthCheck
+    
+    %% Configuration Sync
+    HAProxy_M -.-> HAProxy_B
+
+    %% Default styling with larger font and transparent canvas
+    %%{init: {'theme':'default', 'themeVariables': {'fontSize':'18px', 'background':'transparent', 'canvasBackground':'transparent'}}}%%
