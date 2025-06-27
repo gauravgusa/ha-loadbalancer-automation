@@ -1,0 +1,33 @@
+trigger:
+- none
+
+pool:
+  vmImage: 'ubuntu-22.04'
+
+steps:
+- script: |
+    set -e
+    echo "Cleaning apt cache..."
+    sudo apt-get clean
+
+    echo "Updating package lists..."
+    sudo apt-get update
+
+    echo "Downloading HAProxy and dependencies..."
+    sudo apt-get -d install haproxy
+
+    echo "Downloading Keepalived and dependencies..."
+    sudo apt-get -d install keepalived
+
+    echo "Listing downloaded .deb files for airgap installation:"
+    ls -lh /var/cache/apt/archives/*.deb
+
+    echo "Report of downloaded packages:"
+    ls -1 /var/cache/apt/archives/*.deb > airgap-packages-list.txt
+  displayName: 'Prepare Airgap Packages for HAProxy and Keepalived'
+
+- task: PublishBuildArtifacts@1
+  inputs:
+    PathtoPublish: 'airgap-packages-list.txt'
+    ArtifactName: 'airgap-report'
+    publishLocation: 'Container'
