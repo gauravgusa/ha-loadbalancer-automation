@@ -1,3 +1,6 @@
+streamlit>=1.35.0
+google-generativeai>=0.5.0
+
 import streamlit as st
 import google.generativeai as genai
 
