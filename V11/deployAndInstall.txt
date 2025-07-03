@@ -1,0 +1,50 @@
+#!/bin/bash
+
+# --- Configuration ---
+SSH_USER="ubuntu" # Your SSH username on the target Ubuntu servers
+REMOTE_BASE_DIR="/home/$SSH_USER" # Base directory on the remote server
+REMOTE_SCRIPT_PATH="$REMOTE_BASE_DIR/install_packages.sh"
+REMOTE_DEB_DIR="$REMOTE_BASE_DIR/os_packages" # Where .deb files will go on remote
+
+LOCAL_SCRIPT_NAME="install_packages.sh"
+LOCAL_DEB_DIR="os_packages" # Relative to where you run this script
+
+SERVERS_FILE="servers.txt"
+
+# --- Main Automation Loop ---
+if [ ! -f "$SERVERS_FILE" ]; then
+    echo "Error: $SERVERS_FILE not found. Create it with one server IP/hostname per line."
+    exit 1
+fi
+
+echo "Starting compact deployment and installation on target servers..."
+echo "---"
+
+while IFS= read -r SERVER; do
+    echo "Processing server: $SERVER"
+    echo "--------------------------------------------------"
+
+    # Command to run on the remote server before copying files
+    # Creates the deb directory and handles permissions for the script
+    PREP_COMMAND="mkdir -p $REMOTE_DEB_DIR && chmod +x $REMOTE_SCRIPT_PATH"
+
+    # Execute all remote commands in a single SSH session for efficiency
+    # This also combines the scp commands for potentially faster transfers
+    ssh "$SSH_USER@$SERVER" "$PREP_COMMAND" || { echo "Error: Remote prep failed on $SERVER. Skipping."; continue; }
+    
+    # Copy script and packages. Using '&&' ensures steps are sequential and abort on failure.
+    # We'll use a single scp command for the script and another for all debs.
+    scp "$LOCAL_SCRIPT_NAME" "$SSH_USER@$SERVER:$REMOTE_SCRIPT_PATH" && \
+    scp "$LOCAL_DEB_DIR"/*.deb "$SSH_USER@$SERVER:$REMOTE_DEB_DIR/" || { echo "Error: File transfer failed on $SERVER. Skipping."; continue; }
+
+    # Run the installation script
+    echo "Executing $REMOTE_SCRIPT_PATH on $SERVER..."
+    ssh "$SSH_USER@$SERVER" "$REMOTE_SCRIPT_PATH"
+
+    echo "Finished processing $SERVER."
+    echo ""
+
+done < "$SERVERS_FILE"
+
+echo "---"
+echo "All server operations completed."
