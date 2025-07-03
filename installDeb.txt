@@ -1,0 +1,25 @@
+#!/bin/bash
+
+# Define the packages you want to install
+# Add more .deb files to this list as needed, separated by spaces
+PACKAGES="file1.deb file2.deb" # <--- IMPORTANT: Update this with your actual .deb filenames
+
+echo "Starting package installation on $(hostname)..."
+
+# Loop through each package and install it
+for package in $PACKAGES; do
+    # Ensure the script looks for packages in the correct directory
+    # We'll be running this script from /home/ubuntu, and .deb files are in /home/ubuntu/os_packages
+    FULL_PACKAGE_PATH="/home/ubuntu/os_packages/$package"
+    echo "Installing $FULL_PACKAGE_PATH..."
+    sudo dpkg -i "$FULL_PACKAGE_PATH"
+    if [ $? -eq 0 ]; then
+        echo "$package installed successfully."
+    else
+        echo "Error installing $package. Exit code: $?"
+        # Optionally, you can add 'exit 1' here if a failed installation
+        # should stop the entire script.
+    fi
+done
+
+echo "Package installation complete on $(hostname)."
