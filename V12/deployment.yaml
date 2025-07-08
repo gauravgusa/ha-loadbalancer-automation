@@ -1,0 +1,61 @@
+1. Sample deployment.yaml
+
+fqdn: abd.com
+floatingpoint_ip: 192.168.10.200
+primary_ip: 192.168.10.201
+secondary_ip: 192.168.10.202
+workernodes:
+  - 192.168.10.211
+  - 192.168.10.212
+  - 192.168.10.213
+
+2. Bash Script (Ubuntu, reads YAML, updates all.yml)
+sudo apt-get install -y yq
+
+3. replace values
+
+#!/bin/bash
+
+set -e
+
+DEPLOY_YAML="deployment.yaml"
+ALL_YML="inventory/group_vars/all.yml"
+
+# Check for required files
+if [[ ! -f "$DEPLOY_YAML" ]]; then
+    echo "Error: $DEPLOY_YAML not found!"
+    exit 1
+fi
+if [[ ! -f "$ALL_YML" ]]; then
+    echo "Error: $ALL_YML not found!"
+    exit 1
+fi
+
+# Read values from deployment.yaml using yq
+FQDN=$(yq '.fqdn' "$DEPLOY_YAML")
+FLOATINGPOINT_IP=$(yq '.floatingpoint_ip' "$DEPLOY_YAML")
+PRIMARY_IP=$(yq '.primary_ip' "$DEPLOY_YAML")
+SECONDARY_IP=$(yq '.secondary_ip' "$DEPLOY_YAML")
+WORKERNODES=($(yq '.workernodes[]' "$DEPLOY_YAML"))
+
+# Update keepalived_vip with floatingpoint_ip
+sed -i "s|^keepalived_vip:.*|keepalived_vip: \"$FLOATINGPOINT_IP\"|" "$ALL_YML"
+
+# Remove old workernodes section (if any)
+awk '
+/^workernodes:/ {inblock=1; next}
+inblock && /^  - / {next}
+inblock && !/^  - / {inblock=0}
+!inblock {print}
+' "$ALL_YML" > "${ALL_YML}.tmp"
+mv "${ALL_YML}.tmp" "$ALL_YML"
+
+# Append new workernodes section
+{
+    echo "workernodes:"
+    for ip in "${WORKERNODES[@]}"; do
+        echo "  - \"$ip\""
+    done
+} >> "$ALL_YML"
+
+echo "Updated $ALL_YML with values from $DEPLOY_YAML."
