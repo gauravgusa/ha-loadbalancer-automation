@@ -1,0 +1,199 @@
+# deployment.yml - Centralized Configuration
+fqdn: abc.com
+floating_ip: 192.168.10.200
+
+# Load Balancer Nodes
+lb_nodes:
+  lbhost1:
+    ip: 192.168.10.101
+    priority: 150
+    state: MASTER
+  lbhost2:
+    ip: 192.168.10.102
+    priority: 100
+    state: BACKUP
+
+# Worker Nodes
+worker_nodes:
+  - ip: 192.168.10.221
+    port: 443
+  - ip: 192.168.10.222
+    port: 443
+
+# Backend Servers (HTTP)
+backend_servers:
+  - ip: 192.168.10.211
+    port: 80
+  - ip: 192.168.10.212
+    port: 80
+
+# Application Configuration
+lb_application: app-lb
+ssl_port: 9888
+stats_port: 8404
+stats_uri: /stats
+stats_user: admin
+stats_password: admin
+
+# Software Versions
+haproxy_version: "2.4"
+keepalived_version: "2.2"
+
+# System Configuration
+deb_dir: "/opt/os_packages/ubuntu_22.04"
+ansible_user: ubuntu
+keepalived_interface: eth0
+keepalived_router_id: 51
+keepalived_auth_pass: 123456
+
+# SSL Configuration
+haproxy_cert_path: "/etc/haproxy/certs/ha.pem"
+haproxy_cert_src: "{{ playbook_dir }}/../files/certs/ha.pem"
+
+# Template Files
+haproxy_cfg_src: "haproxy.cfg.j2"
+keepalived_cfg_src: "keepalived.conf.j2"
+
+**
+# inventory/group_vars/all.yml
+# Load deployment configuration
+deployment_config: "{{ lookup('file', playbook_dir + '/../deployment.yml') | from_yaml }}"
+
+# Dynamic host assignment based on inventory hostname
+ansible_host: "{{ deployment_config.lb_nodes[inventory_hostname].ip }}"
+
+# Software versions
+haproxy_version: "{{ deployment_config.haproxy_version }}"
+keepalived_version: "{{ deployment_config.keepalived_version }}"
+
+# System paths
+deb_dir: "{{ deployment_config.deb_dir }}"
+
+# Template sources
+haproxy_cfg_src: "{{ deployment_config.haproxy_cfg_src }}"
+haproxy_cert_src: "{{ deployment_config.haproxy_cert_src }}"
+
+# Network configuration
+keepalived_interface: "{{ deployment_config.keepalived_interface }}"
+keepalived_vip: "{{ deployment_config.floating_ip }}"
+keepalived_router_id: "{{ deployment_config.keepalived_router_id }}"
+keepalived_auth_pass: "{{ deployment_config.keepalived_auth_pass }}"
+
+# Backend servers
+backend_servers: "{{ deployment_config.backend_servers }}"
+secure_backend_servers: "{{ deployment_config.worker_nodes }}"
+
+# SSL and application configuration
+ssl_port: "{{ deployment_config.ssl_port }}"
+stats_port: "{{ deployment_config.stats_port }}"
+stats_uri: "{{ deployment_config.stats_uri }}"
+stats_user: "{{ deployment_config.stats_user }}"
+stats_password: "{{ deployment_config.stats_password }}"
+haproxy_cert_path: "{{ deployment_config.haproxy_cert_path }}"
+
+**
+
+# inventory/hosts.yml
+all:
+  children:
+    lb_nodes:
+      hosts:
+        lbhost1:
+          ansible_host: "{{ (lookup('file', playbook_dir + '/../deployment.yml') | from_yaml).lb_nodes.lbhost1.ip }}"
+        lbhost2:
+          ansible_host: "{{ (lookup('file', playbook_dir + '/../deployment.yml') | from_yaml).lb_nodes.lbhost2.ip }}"
+  vars:
+    # Load deployment configuration
+    deployment_config: "{{ lookup('file', playbook_dir + '/../deployment.yml') | from_yaml }}"
+    
+    # User configuration
+    ansible_user: "{{ deployment_config.ansible_user }}"
+    
+    # LB host configurations
+    lbhost1_ip: "{{ deployment_config.lb_nodes.lbhost1.ip }}"
+    lbhost2_ip: "{{ deployment_config.lb_nodes.lbhost2.ip }}"
+    lbhost1_priority: "{{ deployment_config.lb_nodes.lbhost1.priority }}"
+    lbhost2_priority: "{{ deployment_config.lb_nodes.lbhost2.priority }}"
+    lbhost1_state: "{{ deployment_config.lb_nodes.lbhost1.state }}"
+    lbhost2_state: "{{ deployment_config.lb_nodes.lbhost2.state }}"
+**
+
+# roles/keepalived/templates/keepalived.conf.j2
+vrrp_instance VI_1 {
+    state {{ deployment_config.lb_nodes[inventory_hostname].state }}
+    interface {{ keepalived_interface }}
+    virtual_router_id {{ keepalived_router_id }}
+    priority {{ deployment_config.lb_nodes[inventory_hostname].priority }}
+    advert_int 1
+    unicast_src_ip {{ ansible_host }}
+    unicast_peer {
+{% if inventory_hostname == 'lbhost1' %}
+        {{ deployment_config.lb_nodes.lbhost2.ip }}
+{% else %}
+        {{ deployment_config.lb_nodes.lbhost1.ip }}
+{% endif %}
+    }
+    authentication {
+        auth_type PASS
+        auth_pass {{ keepalived_auth_pass }}
+    }
+    virtual_ipaddress {
+        {{ keepalived_vip }}
+    }
+    track_script {
+        chk_haproxy
+    }
+}
+
+vrrp_script chk_haproxy {
+    script "pidof haproxy"
+    interval 2
+    weight 2
+}
+
+**
+# roles/haproxy/templates/haproxy.cfg.j2
+global
+  log /dev/log local0
+  daemon
+  maxconn 2048
+
+defaults
+  log     global
+  mode    http
+  option  httplog
+  timeout connect 5000ms
+  timeout client  50000ms
+  timeout server  50000ms
+
+frontend http-in
+  bind *:80
+  default_backend servers
+
+backend servers
+  balance roundrobin
+{% for server in backend_servers %}
+  server web{{ loop.index }} {{ server.ip }}:{{ server.port }} check
+{% endfor %}
+
+frontend https_frontend
+  bind *:{{ ssl_port }} ssl crt {{ haproxy_cert_path }}
+  mode http
+  acl is_ssl ssl_fc
+  http-request add-header X-Forwarded-Proto https
+  http-request add-header X-Forwarded-Port {{ ssl_port }}
+  default_backend my_app_backend
+
+backend my_app_backend
+  mode http
+  balance roundrobin
+{% for server in secure_backend_servers %}
+  server worker{{ loop.index }} {{ server.ip }}:{{ server.port }} check ssl verify none
+{% endfor %}
+
+listen stats
+  bind *:{{ stats_port }}
+  stats enable
+  stats uri {{ stats_uri }}
+  stats refresh 30s
+  stats auth {{ stats_user }}:{{ stats_password }}
