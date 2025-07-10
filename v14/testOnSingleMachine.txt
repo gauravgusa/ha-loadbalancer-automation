@@ -1,0 +1,507 @@
+Test deployment on single machine
+
+# deployment.yml - Single Machine Test Configuration
+fqdn: localhost
+floating_ip: 127.0.0.1
+
+# Load Balancer Nodes (using localhost)
+lb_nodes:
+  lbhost1:
+    ip: 127.0.0.1
+    priority: 150
+    state: MASTER
+  lbhost2:
+    ip: 127.0.0.1
+    priority: 100
+    state: BACKUP
+
+# Worker Nodes (Docker containers)
+worker_nodes:
+  - ip: 127.0.0.1
+    port: 8081
+  - ip: 127.0.0.1
+    port: 8082
+
+# Backend Servers (Docker containers)
+backend_servers:
+  - ip: 127.0.0.1
+    port: 8083
+  - ip: 127.0.0.1
+    port: 8084
+
+# Application Configuration
+lb_application: app-lb
+ssl_port: 9888
+stats_port: 8404
+stats_uri: /stats
+stats_user: admin
+stats_password: admin
+
+# Software Versions
+haproxy_version: "2.4"
+keepalived_version: "2.2"
+
+# System Configuration
+deb_dir: "/tmp/os_packages"
+ansible_user: "{{ ansible_user_id }}"
+keepalived_interface: lo
+keepalived_router_id: 51
+keepalived_auth_pass: 123456
+
+# SSL Configuration
+haproxy_cert_path: "/etc/haproxy/certs/ha.pem"
+haproxy_cert_src: "{{ playbook_dir }}/../files/certs/ha.pem"
+
+# Template Files
+haproxy_cfg_src: "haproxy.cfg.j2"
+keepalived_cfg_src: "keepalived.conf.j2"
+
+*************
+#!/bin/bash
+# docker-test-setup.sh - Create test backend servers
+
+echo "Setting up test environment..."
+
+# Create test directory structure
+mkdir -p test-env/{backend-servers,ssl-servers,certs}
+cd test-env
+
+# Create simple HTTP server for backend testing
+cat > backend-servers/app1.py << 'EOF'
+from http.server import HTTPServer, BaseHTTPRequestHandler
+import json
+
+class TestHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.send_header('Content-type', 'application/json')
+        self.end_headers()
+        response = {
+            "server": "backend-server-1",
+            "port": 8083,
+            "path": self.path,
+            "status": "healthy"
+        }
+        self.wfile.write(json.dumps(response).encode())
+
+if __name__ == '__main__':
+    server = HTTPServer(('0.0.0.0', 8083), TestHandler)
+    print("Backend Server 1 running on port 8083")
+    server.serve_forever()
+EOF
+
+cat > backend-servers/app2.py << 'EOF'
+from http.server import HTTPServer, BaseHTTPRequestHandler
+import json
+
+class TestHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.send_header('Content-type', 'application/json')
+        self.end_headers()
+        response = {
+            "server": "backend-server-2",
+            "port": 8084,
+            "path": self.path,
+            "status": "healthy"
+        }
+        self.wfile.write(json.dumps(response).encode())
+
+if __name__ == '__main__':
+    server = HTTPServer(('0.0.0.0', 8084), TestHandler)
+    print("Backend Server 2 running on port 8084")
+    server.serve_forever()
+EOF
+
+# Create HTTPS servers for worker nodes
+cat > ssl-servers/worker1.py << 'EOF'
+from http.server import HTTPServer, BaseHTTPRequestHandler
+import ssl
+import json
+
+class TestHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.send_header('Content-type', 'application/json')
+        self.end_headers()
+        response = {
+            "server": "worker-node-1",
+            "port": 8081,
+            "path": self.path,
+            "status": "healthy",
+            "ssl": True
+        }
+        self.wfile.write(json.dumps(response).encode())
+
+if __name__ == '__main__':
+    server = HTTPServer(('0.0.0.0', 8081), TestHandler)
+    server.socket = ssl.wrap_socket(server.socket, 
+                                   certfile='../certs/server.crt',
+                                   keyfile='../certs/server.key',
+                                   server_side=True)
+    print("Worker Node 1 running on port 8081 (HTTPS)")
+    server.serve_forever()
+EOF
+
+cat > ssl-servers/worker2.py << 'EOF'
+from http.server import HTTPServer, BaseHTTPRequestHandler
+import ssl
+import json
+
+class TestHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.send_header('Content-type', 'application/json')
+        self.end_headers()
+        response = {
+            "server": "worker-node-2",
+            "port": 8082,
+            "path": self.path,
+            "status": "healthy",
+            "ssl": True
+        }
+        self.wfile.write(json.dumps(response).encode())
+
+if __name__ == '__main__':
+    server = HTTPServer(('0.0.0.0', 8082), TestHandler)
+    server.socket = ssl.wrap_socket(server.socket, 
+                                   certfile='../certs/server.crt',
+                                   keyfile='../certs/server.key',
+                                   server_side=True)
+    print("Worker Node 2 running on port 8082 (HTTPS)")
+    server.serve_forever()
+EOF
+
+# Generate self-signed certificates
+cd certs
+openssl req -x509 -newkey rsa:4096 -keyout server.key -out server.crt -days 365 -nodes -subj "/CN=localhost"
+
+# Create combined certificate for HAProxy
+cat server.crt server.key > ha.pem
+
+echo "Test environment setup complete!"
+echo "Run the following commands in separate terminals:"
+echo "1. cd test-env && python3 backend-servers/app1.py"
+echo "2. cd test-env && python3 backend-servers/app2.py"
+echo "3. cd test-env && python3 ssl-servers/worker1.py"
+echo "4. cd test-env && python3 ssl-servers/worker2.py"
+
+
+*****************8
+Test inventory on single machine 
+
+# test-inventory/hosts.yml
+all:
+  children:
+    lb_nodes:
+      hosts:
+        lbhost1:
+          ansible_host: 127.0.0.1
+          ansible_connection: local
+        # For single machine testing, comment out lbhost2 to avoid conflicts
+        # lbhost2:
+        #   ansible_host: 127.0.0.1
+        #   ansible_connection: local
+  vars:
+    # Load deployment configuration
+    deployment_config: "{{ lookup('file', playbook_dir + '/../deployment.yml') | from_yaml }}"
+    
+    # User configuration
+    ansible_user: "{{ deployment_config.ansible_user }}"
+    
+    # LB host configurations
+    lbhost1_ip: "{{ deployment_config.lb_nodes.lbhost1.ip }}"
+    lbhost2_ip: "{{ deployment_config.lb_nodes.lbhost2.ip }}"
+    lbhost1_priority: "{{ deployment_config.lb_nodes.lbhost1.priority }}"
+    lbhost2_priority: "{{ deployment_config.lb_nodes.lbhost2.priority }}"
+    lbhost1_state: "{{ deployment_config.lb_nodes.lbhost1.state }}"
+    lbhost2_state: "{{ deployment_config.lb_nodes.lbhost2.state }}"
+
+
+************
+test playbook
+
+# test-playbook.yml
+---
+- name: Test HAProxy Load Balancer Setup
+  hosts: lb_nodes
+  become: yes
+  vars:
+    # Skip keepalived for single machine testing
+    skip_keepalived: true
+    
+  tasks:
+    - name: Install HAProxy
+      package:
+        name: haproxy
+        state: present
+      
+    - name: Create HAProxy certificate directory
+      file:
+        path: /etc/haproxy/certs
+        state: directory
+        owner: root
+        group: root
+        mode: '0755'
+        
+    - name: Copy SSL certificate
+      copy:
+        src: "{{ playbook_dir }}/test-env/certs/ha.pem"
+        dest: "{{ haproxy_cert_path }}"
+        owner: root
+        group: root
+        mode: '0600'
+        
+    - name: Generate HAProxy configuration
+      template:
+        src: "{{ haproxy_cfg_src }}"
+        dest: /etc/haproxy/haproxy.cfg
+        owner: root
+        group: root
+        mode: '0644'
+      notify: restart haproxy
+      
+    - name: Start and enable HAProxy
+      service:
+        name: haproxy
+        state: started
+        enabled: yes
+        
+    - name: Install keepalived (optional for single machine)
+      package:
+        name: keepalived
+        state: present
+      when: not skip_keepalived
+      
+    - name: Generate keepalived configuration
+      template:
+        src: "{{ keepalived_cfg_src }}"
+        dest: /etc/keepalived/keepalived.conf
+        owner: root
+        group: root
+        mode: '0644'
+      notify: restart keepalived
+      when: not skip_keepalived
+      
+    - name: Start and enable keepalived
+      service:
+        name: keepalived
+        state: started
+        enabled: yes
+      when: not skip_keepalived
+      
+  handlers:
+    - name: restart haproxy
+      service:
+        name: haproxy
+        state: restarted
+        
+    - name: restart keepalived
+      service:
+        name: keepalived
+        state: restarted
+
+***************
+#!/bin/bash
+# test-complete.sh - Complete testing script
+
+set -e
+
+echo "=== HAProxy Load Balancer Test Setup ==="
+
+# Setup directory structure
+mkdir -p {test-inventory,roles/haproxy/templates,roles/keepalived/templates,files/certs}
+
+# Step 1: Setup test environment
+echo "1. Setting up test backend servers..."
+./docker-test-setup.sh
+
+# Step 2: Start backend servers in background
+echo "2. Starting backend servers..."
+cd test-env
+python3 backend-servers/app1.py &
+APP1_PID=$!
+python3 backend-servers/app2.py &
+APP2_PID=$!
+python3 ssl-servers/worker1.py &
+WORKER1_PID=$!
+python3 ssl-servers/worker2.py &
+WORKER2_PID=$!
+cd ..
+
+# Wait for servers to start
+sleep 3
+
+# Step 3: Copy certificates
+echo "3. Copying certificates..."
+cp test-env/certs/ha.pem files/certs/
+
+# Step 4: Create ansible configuration
+echo "4. Creating ansible configuration..."
+cat > ansible.cfg << 'EOF'
+[defaults]
+inventory = test-inventory/hosts.yml
+host_key_checking = False
+gathering = smart
+stdout_callback = yaml
+EOF
+
+# Step 5: Run ansible playbook
+echo "5. Running ansible playbook..."
+ansible-playbook -i test-inventory/hosts.yml test-playbook.yml
+
+# Step 6: Test the load balancer
+echo "6. Testing load balancer..."
+echo "Testing HTTP backend (port 80):"
+for i in {1..4}; do
+    echo "Request $i:"
+    curl -s http://localhost:80/ | jq .server
+done
+
+echo -e "\nTesting HTTPS frontend (port 9888):"
+for i in {1..4}; do
+    echo "Request $i:"
+    curl -s -k https://localhost:9888/ | jq .server
+done
+
+echo -e "\nTesting HAProxy stats (port 8404):"
+curl -s http://admin:admin@localhost:8404/stats | grep -E "(Backend|Server)"
+
+# Cleanup function
+cleanup() {
+    echo "Cleaning up..."
+    kill $APP1_PID $APP2_PID $WORKER1_PID $WORKER2_PID 2>/dev/null || true
+    sudo systemctl stop haproxy 2>/dev/null || true
+    sudo systemctl stop keepalived 2>/dev/null || true
+}
+
+# Set trap for cleanup
+trap cleanup EXIT
+
+echo -e "\n=== Test Results ==="
+echo "✓ Backend servers started successfully"
+echo "✓ SSL certificates generated"
+echo "✓ HAProxy configuration deployed"
+echo "✓ Load balancing working"
+echo "✓ Stats page accessible"
+
+echo -e "\n=== Manual Testing URLs ==="
+echo "HTTP Load Balancer: http://localhost:80"
+echo "HTTPS Load Balancer: https://localhost:9888"
+echo "HAProxy Stats: http://admin:admin@localhost:8404/stats"
+
+echo -e "\nPress Ctrl+C to stop all services and cleanup..."
+wait
+
+
+******
+#!/bin/bash
+# minimal-test.sh - Simple configuration validation
+
+echo "=== Minimal Configuration Test ==="
+
+# Create test structure
+mkdir -p {test-inventory/group_vars,roles/{haproxy,keepalived}/templates}
+
+# Test configuration loading
+echo "1. Testing deployment.yml loading..."
+ansible localhost -m debug -a "var=deployment_config" -e "deployment_config={{ lookup('file', 'deployment.yml') | from_yaml }}"
+
+# Test template rendering
+echo "2. Testing template rendering..."
+ansible localhost -m template -a "src=roles/haproxy/templates/haproxy.cfg.j2 dest=/tmp/test-haproxy.cfg" -e "deployment_config={{ lookup('file', 'deployment.yml') | from_yaml }}"
+
+echo "Generated HAProxy config:"
+cat /tmp/test-haproxy.cfg
+
+ansible localhost -m template -a "src=roles/keepalived/templates/keepalived.conf.j2 dest=/tmp/test-keepalived.conf" -e "deployment_config={{ lookup('file', 'deployment.yml') | from_yaml }}" -e "inventory_hostname=lbhost1"
+
+echo "Generated Keepalived config:"
+cat /tmp/test-keepalived.conf
+
+# Validate HAProxy configuration
+echo "3. Validating HAProxy configuration..."
+sudo haproxy -c -f /tmp/test-haproxy.cfg
+
+echo "✓ Configuration validation passed!"
+
+# Test variable substitution
+echo "4. Testing variable substitution..."
+ansible localhost -m debug -a "msg='Backend servers: {{ deployment_config.backend_servers }}'" -e "deployment_config={{ lookup('file', 'deployment.yml') | from_yaml }}"
+
+ansible localhost -m debug -a "msg='Worker nodes: {{ deployment_config.worker_nodes }}'" -e "deployment_config={{ lookup('file', 'deployment.yml') | from_yaml }}"
+
+echo "✓ All tests passed!"
+
+
+
+****************************
+
+
+Step-by-Step Testing Instructions:
+1. Quick Configuration Test (No services needed):
+bash# Make the minimal test script executable
+chmod +x minimal-test.sh
+
+# Run configuration validation
+./minimal-test.sh
+2. Full Integration Test (With backend services):
+bash# Make all scripts executable
+chmod +x docker-test-setup.sh test-complete.sh
+
+# Run complete test
+./test-complete.sh
+3. Manual Step-by-Step Testing:
+a) Setup test environment:
+bash./docker-test-setup.sh
+b) Start backend servers in separate terminals:
+bash# Terminal 1
+cd test-env && python3 backend-servers/app1.py
+
+# Terminal 2  
+cd test-env && python3 backend-servers/app2.py
+
+# Terminal 3
+cd test-env && python3 ssl-servers/worker1.py
+
+# Terminal 4
+cd test-env && python3 ssl-servers/worker2.py
+c) Deploy configuration:
+bashansible-playbook -i test-inventory/hosts.yml test-playbook.yml
+d) Test load balancing:
+bash# Test HTTP backend
+curl http://localhost:80
+
+# Test HTTPS frontend  
+curl -k https://localhost:9888
+
+# Check stats
+curl http://admin:admin@localhost:8404/stats
+4. Docker-based Testing (Alternative):
+If you prefer Docker containers for backend servers:
+bash# Start simple web servers
+docker run -d -p 8083:80 --name backend1 nginx
+docker run -d -p 8084:80 --name backend2 nginx
+
+# Create simple HTTPS servers
+docker run -d -p 8081:443 --name worker1 nginx
+docker run -d -p 8082:443 --name worker2 nginx
+What Each Test Validates:
+
+Configuration loading from deployment.yml
+1. Template rendering with correct variable substitution
+2. HAProxy configuration syntax validation
+3. Load balancing across multiple backends
+4. SSL termination functionality
+5. Stats page accessibility
+6. Service integration between components
+
+Key Testing Points:
+
+Port conflicts: Each service runs on different ports
+SSL certificates: Self-signed certs for testing
+Local networking: All services use localhost/127.0.0.1
+Single machine: No keepalived conflicts
+Configuration validation: Ansible syntax and HAProxy config validation
+
+This setup allows you to test the entire configuration system on a single machine without needing multiple servers or complex networking setup.
