@@ -505,3 +505,33 @@ Single machine: No keepalived conflicts
 Configuration validation: Ansible syntax and HAProxy config validation
 
 This setup allows you to test the entire configuration system on a single machine without needing multiple servers or complex networking setup.
+
+
+
+***
+test.py
+import requests
+
+def post_to_backend(server_url, data):
+    try:
+        response = requests.post(server_url, json=data)
+        print(f"POST to {server_url}")
+        print("Status Code:", response.status_code)
+        print("Response:", response.text)
+    except Exception as e:
+        print(f"Error posting to {server_url}: {e}")
+
+if __name__ == '__main__':
+    # Data to send in the POST request
+    payload = {
+        "message": "Hello, backend!",
+        "status": "test"
+    }
+
+    # Backend server URLs
+    backend1 = "http://localhost:8083/"
+    backend2 = "http://localhost:8084/"
+
+    # Send POST requests
+    post_to_backend(backend1, payload)
+    post_to_backend(backend2, payload)
