@@ -1,0 +1,25 @@
+- name: Ensure HAProxy logging is configured
+  blockinfile:
+    path: /etc/haproxy/haproxy.cfg
+    block: |
+      global
+          log 127.0.0.1:514 local0
+      defaults
+          log     global
+          option  httplog
+
+- name: Configure rsyslog for HAProxy
+  copy:
+    dest: /etc/rsyslog.d/49-haproxy.conf
+    content: |
+      local0.*    /var/log/haproxy.log
+
+- name: Restart rsyslog
+  service:
+    name: rsyslog
+    state: restarted
+
+- name: Restart haproxy
+  service:
+    name: haproxy
+    state: restarted
