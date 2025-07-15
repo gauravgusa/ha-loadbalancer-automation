@@ -1,0 +1,52 @@
+! Configuration File for keepalived
+
+global_defs {
+    router_id {{ deployment_config.fqdn | default(inventory_hostname) }}
+}
+
+vrrp_script chk_haproxy {
+    script "pidof haproxy"
+    interval 2
+    weight 2
+}
+
+vrrp_instance VI_1 {
+    state {{ 
+        deployment_config.lbhost1_state 
+            if inventory_hostname == 'lbhost1' 
+            else deployment_config.lbhost2_state 
+    }}
+    
+    interface {{ keepalived_interface | default('eth0') }}
+    virtual_router_id 51
+
+    priority {{ 
+        deployment_config.lbhost1_priority 
+            if inventory_hostname == 'lbhost1' 
+            else deployment_config.lbhost2_priority 
+    }}
+
+    advert_int 1
+    unicast_src_ip {{ ansible_host }}
+
+    unicast_peer {
+        {% if inventory_hostname == "lbhost1" %}
+            {{ deployment_config.secondary_ip }}
+        {% else %}
+            {{ deployment_config.primary_ip }}
+        {% endif %}
+    }
+
+    authentication {
+        auth_type PASS
+        auth_pass 123456
+    }
+
+    virtual_ipaddress {
+        {{ deployment_config.floatingpoint_ip }}
+    }
+
+    track_script {
+        chk_haproxy
+    }
+}
