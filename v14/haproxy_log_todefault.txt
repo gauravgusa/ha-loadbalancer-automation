@@ -1,0 +1,202 @@
+---
+- name: Setup HAProxy and Keepalived with Logging
+  hosts: loadbalancers
+  become: yes
+  vars:
+    # HAProxy Configuration
+    haproxy_stats_user: admin
+    haproxy_stats_password: secure_password
+    haproxy_stats_port: 8080
+    
+    # Keepalived Configuration
+    keepalived_interface: eth0
+    keepalived_virtual_ip: 192.168.1.100
+    keepalived_router_id: 51
+    
+    # Backend servers
+    backend_servers:
+      - name: web1
+        address: 192.168.1.10
+        port: 80
+      - name: web2
+        address: 192.168.1.11
+        port: 80
+      - name: web3
+        address: 192.168.1.12
+        port: 80
+
+  tasks:
+    # Package Installation
+    - name: Install HAProxy and Keepalived
+      package:
+        name:
+          - haproxy
+          - keepalived
+          - rsyslog
+        state: present
+        update_cache: yes
+
+    # Configure rsyslog for HAProxy logging (using Unix domain socket - more secure)
+    - name: Configure rsyslog for HAProxy logging
+      blockinfile:
+        path: /etc/rsyslog.conf
+        block: |
+          # HAProxy logging configuration using Unix domain socket
+          $ModLoad imuxsock
+          $CreateDirs on
+          
+          # HAProxy log facility - redirect to dedicated log file
+          local0.*    /var/log/haproxy.log
+          &stop
+        marker: "# {mark} ANSIBLE MANAGED BLOCK - HAProxy logging"
+        insertafter: "^#.*ModLoad imuxsock"
+      notify: restart rsyslog
+
+    # Alternative: UDP-based logging configuration
+    - name: Configure rsyslog for HAProxy UDP logging (alternative method)
+      blockinfile:
+        path: /etc/rsyslog.conf
+        block: |
+          # HAProxy logging configuration via UDP (alternative to socket)
+          $ModLoad imudp
+          $UDPServerRun 514
+          $UDPServerAddress 127.0.0.1
+          
+          # HAProxy log facility
+          local0.*    /var/log/haproxy.log
+          &stop
+        marker: "# {mark} ANSIBLE MANAGED BLOCK - HAProxy UDP logging"
+        insertafter: "^#.*ModLoad imudp"
+      when: haproxy_logging_method == "udp"
+      notify: restart rsyslog
+
+    - name: Create HAProxy log directory
+      file:
+        path: /var/log
+        state: directory
+        owner: root
+        group: root
+        mode: '0755'
+
+    - name: Create HAProxy log file
+      file:
+        path: /var/log/haproxy.log
+        state: touch
+        owner: syslog
+        group: adm
+        mode: '0640'
+
+    # HAProxy Configuration
+    - name: Configure HAProxy
+      template:
+        src: haproxy.cfg.j2
+        dest: /etc/haproxy/haproxy.cfg
+        owner: root
+        group: root
+        mode: '0644'
+        backup: yes
+      notify: restart haproxy
+
+    # Keepalived Configuration
+    - name: Configure Keepalived
+      template:
+        src: keepalived.conf.j2
+        dest: /etc/keepalived/keepalived.conf
+        owner: root
+        group: root
+        mode: '0644'
+        backup: yes
+      notify: restart keepalived
+
+    # Enable and start services
+    - name: Enable and start rsyslog
+      systemd:
+        name: rsyslog
+        enabled: yes
+        state: started
+
+    - name: Enable and start HAProxy
+      systemd:
+        name: haproxy
+        enabled: yes
+        state: started
+
+    - name: Enable and start Keepalived
+      systemd:
+        name: keepalived
+        enabled: yes
+        state: started
+
+    # Logrotate configuration for HAProxy
+    - name: Configure logrotate for HAProxy
+      copy:
+        content: |
+          /var/log/haproxy.log {
+              daily
+              rotate 52
+              missingok
+              notifempty
+              compress
+              delaycompress
+              postrotate
+                  /bin/kill -HUP `cat /var/run/rsyslogd.pid 2>/dev/null` 2>/dev/null || true
+              endscript
+          }
+        dest: /etc/logrotate.d/haproxy
+        owner: root
+        group: root
+        mode: '0644'
+
+    # Firewall configuration (if firewalld is used)
+    - name: Configure firewall for HAProxy
+      firewalld:
+        port: "{{ item }}"
+        permanent: yes
+        state: enabled
+        immediate: yes
+      loop:
+        - 80/tcp
+        - 443/tcp
+        - "{{ haproxy_stats_port }}/tcp"
+      ignore_errors: yes
+
+    # Basic health check
+    - name: Check HAProxy status
+      systemd:
+        name: haproxy
+        state: started
+      register: haproxy_status
+
+    - name: Check Keepalived status
+      systemd:
+        name: keepalived
+        state: started
+      register: keepalived_status
+
+    - name: Verify HAProxy log file exists and is writable
+      stat:
+        path: /var/log/haproxy.log
+      register: haproxy_log_stat
+
+    - name: Display service status
+      debug:
+        msg: |
+          HAProxy Status: {{ haproxy_status.status.ActiveState }}
+          Keepalived Status: {{ keepalived_status.status.ActiveState }}
+          HAProxy Log File: {{ 'Present' if haproxy_log_stat.stat.exists else 'Missing' }}
+
+  handlers:
+    - name: restart rsyslog
+      systemd:
+        name: rsyslog
+        state: restarted
+
+    - name: restart haproxy
+      systemd:
+        name: haproxy
+        state: restarted
+
+    - name: restart keepalived
+      systemd:
+        name: keepalived
+        state: restarted
