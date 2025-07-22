@@ -1,0 +1,112 @@
+To gracefully remove two worker nodes from a Kubernetes cluster with one master node and three worker nodes, while ensuring minimal disruption to the PostgreSQL database, connection pools, and Keycloak application, follow these steps. The process involves draining the nodes to safely evict pods and updating configurations to maintain application stability.
+
+### Prerequisites
+- **Cluster Access**: Ensure you have `kubectl` configured with admin access to the cluster.
+- **Backup Critical Data**: Back up the PostgreSQL database to prevent data loss.
+- **Check Application Dependencies**: Verify that the PostgreSQL database, connection pools, and Keycloak application can handle pod rescheduling without downtime (e.g., replication for PostgreSQL, session persistence for Keycloak).
+- **Node Identification**: Identify the two worker nodes to remove (e.g., `worker-node-2` and `worker-node-3`).
+
+### Step-by-Step Process
+
+1. **Verify Node Status**
+   Confirm the nodes in the cluster:
+   ```bash
+   kubectl get nodes
+   ```
+   Example output:
+   ```
+   NAME           STATUS   ROLES    AGE   VERSION
+   master-node    Ready    master   30d   v1.28.0
+   worker-node-1  Ready    <none>   30d   v1.28.0
+   worker-node-2  Ready    <none>   30d   v1.28.0
+   worker-node-3  Ready    <none>   30d   v1.28.0
+   ```
+
+2. **Cordon the Nodes**
+   Mark the nodes as unschedulable to prevent new pods from being scheduled:
+   ```bash
+   kubectl cordon worker-node-2
+   kubectl cordon worker-node-3
+   ```
+   Verify:
+   ```bash
+   kubectl get nodes
+   ```
+   The nodes will show `SchedulingDisabled` in the `STATUS` column.
+
+3. **Check Running Pods**
+   Identify pods running on the nodes to be removed:
+   ```bash
+   kubectl get pods -o wide --all-namespaces | grep -E "worker-node-2|worker-node-3"
+   ```
+   Note any pods related to PostgreSQL, connection pools, or Keycloak. Ensure these applications have replicas or are configured for high availability (e.g., PostgreSQL with replication, Keycloak with clustering).
+
+4. **Drain the Nodes**
+   Safely evict pods from the nodes. Use the `--ignore-daemonsets` flag to skip daemonset pods (if any) and `--delete-emptydir-data` if emptyDir volumes are used:
+   ```bash
+   kubectl drain worker-node-2 --ignore-daemonsets --delete-emptydir-data --force
+   kubectl drain worker-node-3 --ignore-daemonsets --delete-emptydir-data --force
+   ```
+   - **PostgreSQL Considerations**: If the PostgreSQL pod is stateful (e.g., using a StatefulSet), ensure the pod is rescheduled to `worker-node-1` and that persistent volumes (PVs) are reattached correctly. Verify replication (if using replicas) to avoid downtime.
+   - **Connection Pools**: Ensure connection pools (e.g., PgBouncer or similar) are configured to reconnect to the new PostgreSQL pod location.
+   - **Keycloak**: Verify that Keycloak’s sessions are persisted (e.g., using an external database like PostgreSQL or Infinispan cache) to avoid session loss during pod rescheduling.
+
+5. **Verify Pod Rescheduling**
+   Check that all pods have been rescheduled to `worker-node-1`:
+   ```bash
+   kubectl get pods -o wide --all-namespaces
+   ```
+   Ensure no critical pods are in a `Pending` or `CrashLoopBackOff` state. For PostgreSQL, confirm the database is accessible:
+   ```bash
+   kubectl exec -it <postgresql-pod-name> -- psql -U <user> -c "SELECT 1;"
+   ```
+   For Keycloak, verify the application is accessible via its service or ingress.
+
+6. **Remove the Nodes**
+   If the nodes are managed by a cloud provider or cluster autoscaler, delete them from the Kubernetes cluster:
+   ```bash
+   kubectl delete node worker-node-2
+   kubectl delete node worker-node-3
+   ```
+   If using a cloud provider, also terminate the instances via the provider’s console or CLI (e.g., AWS EC2, GCE, or Azure).
+
+7. **Update Application Configurations**
+   - **PostgreSQL**: If using a service or DNS for PostgreSQL, ensure clients reconnect to the new pod location. Update connection pool configurations if necessary.
+   - **Keycloak**: If Keycloak relies on specific node IPs or configurations, update its settings to reflect the new cluster topology.
+   - **Connection Pools**: Adjust pool sizes if the reduced node count impacts resource availability.
+
+8. **Verify Cluster Health**
+   Confirm the cluster is stable:
+   ```bash
+   kubectl get nodes
+   kubectl get pods --all-namespaces
+   ```
+   Ensure `worker-node-1` is handling the workload and that resource utilization (CPU/memory) is within acceptable limits:
+   ```bash
+   kubectl top nodes
+   kubectl top pods --all-namespaces
+   ```
+
+9. **Test Applications**
+   - Access Keycloak via its URL or ingress to ensure authentication services are operational.
+   - Run test queries against PostgreSQL to confirm database functionality.
+   - Verify that connection pools are routing traffic correctly.
+
+### Additional Considerations
+- **Resource Constraints**: With only one worker node remaining, monitor resource usage to avoid bottlenecks. Consider scaling up `worker-node-1` or adding new nodes if needed.
+- **Persistent Volumes**: Ensure PVs for PostgreSQL are not tied to specific nodes (e.g., use cloud-backed storage like EBS, GCE PD, or Azure Disk).
+- **High Availability**: If PostgreSQL or Keycloak lacks replication, consider deploying additional replicas before draining nodes to avoid downtime.
+- **Taints and Tolerations**: If the remaining node has taints, ensure critical pods have appropriate tolerations to schedule correctly.
+- **Backups**: Regularly back up Keycloak and PostgreSQL data to handle unexpected failures.
+
+### Rollback Plan
+If issues arise (e.g., pods fail to reschedule or applications become unavailable):
+1. Uncordon the nodes:
+   ```bash
+   kubectl uncordon worker-node-2
+   kubectl uncordon worker-node-3
+   ```
+2. Revert any node deletions via the cloud provider if instances were terminated.
+3. Troubleshoot pod scheduling issues using `kubectl describe pod <pod-name>`.
+
+By following these steps, you can gracefully remove the two worker nodes while ensuring the PostgreSQL database, connection pools, and Keycloak application remain operational. If you encounter specific errors or need further assistance, provide details for targeted guidance.
