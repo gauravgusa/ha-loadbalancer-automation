@@ -1,0 +1,164 @@
+When shutting down two worker nodes in a Kubernetes cluster running Keycloak pods configured with PostgreSQL and high availability (HA), you need to ensure that Keycloak and its dependencies (PostgreSQL and connection pools) remain available and functional. Since Keycloak is configured for HA (likely using clustering with an external PostgreSQL database for session persistence), the goal is to gracefully reschedule pods to the remaining worker node (`worker-node-1`) while maintaining application availability. Below is a detailed guide to handle the Keycloak application during the node shutdown process.
+
+### Assumptions
+- Keycloak is deployed with HA, likely using a clustered setup (e.g., Infinispan for session/cache replication or PostgreSQL for persistent storage).
+- PostgreSQL is used as the external database for Keycloak, managed via a StatefulSet or similar for persistence.
+- The cluster has one master node and three worker nodes, with two worker nodes (`worker-node-2` and `worker-node-3`) being removed.
+- Keycloak pods are configured with proper tolerations, affinity rules, and replicas for HA.
+- PostgreSQL has replication or is configured to handle pod rescheduling without data loss.
+
+### Step-by-Step Process to Handle Keycloak During Node Shutdown
+
+1. **Verify Keycloak and PostgreSQL Configuration**
+   - **Check Keycloak Pods**:
+     Confirm the number of Keycloak replicas and their current nodes:
+     ```bash
+     kubectl get pods -o wide -n <keycloak-namespace> | grep keycloak
+     ```
+     Example output:
+     ```
+     keycloak-0   1/1   Running   0   1h   10.244.2.10   worker-node-2
+     keycloak-1   1/1   Running   0   1h   10.244.3.15   worker-node-3
+     ```
+     Ensure at least two replicas are running for HA.
+   - **Check PostgreSQL Pods**:
+     Verify PostgreSQL’s deployment (e.g., StatefulSet) and replication setup:
+     ```bash
+     kubectl get pods -o wide -n <postgres-namespace> | grep postgres
+     kubectl get statefulset -n <postgres-namespace>
+     ```
+     Confirm that PostgreSQL has persistent volumes (PVs) and replicas (if using replication).
+   - **Check Keycloak HA Setup**:
+     Verify that Keycloak is using PostgreSQL for session persistence or Infinispan for cache replication. Check the Keycloak deployment configuration:
+     ```bash
+     kubectl describe deployment -n <keycloak-namespace> keycloak
+     ```
+     Look for environment variables or config maps pointing to the PostgreSQL service or Infinispan settings.
+
+2. **Cordon the Nodes**
+   Prevent new pods from scheduling on the nodes to be removed:
+   ```bash
+   kubectl cordon worker-node-2
+   kubectl cordon worker-node-3
+   ```
+   Verify:
+   ```bash
+   kubectl get nodes
+   ```
+   The nodes should show `SchedulingDisabled`.
+
+3. **Drain the Nodes**
+   Evict pods from the nodes to be shut down, ensuring Keycloak and PostgreSQL pods are rescheduled to `worker-node-1`:
+   ```bash
+   kubectl drain worker-node-2 --ignore-daemonsets --delete-emptydir-data --force
+   kubectl drain worker-node-3 --ignore-daemonsets --delete-emptydir-data --force
+   ```
+   - **Keycloak HA Behavior**: Since Keycloak is configured for HA, its pods should reschedule to `worker-node-1`. The HA setup (e.g., Infinispan or PostgreSQL-backed sessions) ensures that user sessions remain intact during pod rescheduling. If Keycloak uses Infinispan, ensure the cache is replicated across pods.
+   - **PostgreSQL Considerations**: If PostgreSQL is running as a StatefulSet, its pod will reattach to its persistent volume claim (PVC) on `worker-node-1`. If replication is enabled (e.g., primary-replica setup), ensure the primary pod is rescheduled and replicas reconnect properly.
+   - **Connection Pools**: If Keycloak or PostgreSQL uses a connection pool (e.g., PgBouncer), verify that the pool reconnects to the rescheduled PostgreSQL pod. Check the pool’s service or DNS configuration.
+
+4. **Monitor Pod Rescheduling**
+   Verify that Keycloak and PostgreSQL pods are running on `worker-node-1`:
+   ```bash
+   kubectl get pods -o wide -n <keycloak-namespace> | grep keycloak
+   kubectl get pods -o wide -n <postgres-namespace> | grep postgres
+   ```
+   Example output:
+   ```
+   keycloak-0   1/1   Running   0   5m   10.244.1.10   worker-node-1
+   keycloak-1   1/1   Running   0   5m   10.244.1.11   worker-node-1
+   postgres-0   1/1   Running   0   5m   10.244.1.12   worker-node-1
+   ```
+   Ensure no pods are in `Pending` or `CrashLoopBackOff` states.
+
+5. **Verify Keycloak Availability**
+   - **Test Keycloak Access**: Access Keycloak via its service, ingress, or load balancer URL to confirm it’s operational:
+     ```bash
+     curl -I <keycloak-url>
+     ```
+     Or log in to the Keycloak admin console to verify functionality.
+   - **Check Session Persistence**: If Keycloak uses PostgreSQL for session storage, verify that user sessions are intact by logging in with an existing session. If using Infinispan, ensure cache replication is working:
+     ```bash
+     kubectl logs -n <keycloak-namespace> keycloak-0
+     ```
+     Look for logs indicating successful cache synchronization or database connections.
+   - **Verify PostgreSQL Connectivity**: Ensure Keycloak can connect to the rescheduled PostgreSQL pod:
+     ```bash
+     kubectl exec -it -n <postgres-namespace> postgres-0 -- psql -U <keycloak-user> -d <keycloak-db> -c "SELECT 1;"
+     ```
+
+6. **Delete the Nodes**
+   Once all pods are rescheduled and verified, remove the nodes from the cluster:
+   ```bash
+   kubectl delete node worker-node-2
+   kubectl delete node worker-node-3
+   ```
+   If using a cloud provider, terminate the corresponding instances.
+
+7. **Update Configurations for Reduced Cluster**
+   - **Keycloak Scaling**: With only one worker node, ensure Keycloak’s replicas fit within `worker-node-1`’s resource capacity. Check resource requests/limits:
+     ```bash
+     kubectl describe deployment -n <keycloak-namespace> keycloak
+     ```
+     If necessary, scale down replicas to avoid resource contention:
+     ```bash
+     kubectl scale deployment -n <keycloak-namespace> keycloak --replicas=1
+     ```
+   - **PostgreSQL**: If PostgreSQL has replicas, ensure they are running correctly on `worker-node-1`. Adjust resource limits if needed.
+   - **Connection Pools**: Update connection pool configurations (e.g., PgBouncer) to reflect the new PostgreSQL pod location or service endpoint.
+
+8. **Monitor Resource Utilization**
+   Check resource usage on `worker-node-1` to ensure it can handle Keycloak, PostgreSQL, and connection pool pods:
+   ```bash
+   kubectl top node worker-node-1
+   kubectl top pods -n <keycloak-namespace>
+   kubectl top pods -n <postgres-namespace>
+   ```
+   If CPU or memory usage is high, consider scaling up `worker-node-1` or optimizing pod resource requests.
+
+9. **Test Application End-to-End**
+   - Log in to Keycloak to verify authentication and session handling.
+   - Test applications relying on Keycloak for authentication (e.g., OAuth2 flows).
+   - Query PostgreSQL to ensure Keycloak’s database operations are functioning:
+     ```bash
+     kubectl exec -it -n <postgres-namespace> postgres-0 -- psql -U <keycloak-user> -d <keycloak-db> -c "SELECT * FROM realm LIMIT 1;"
+     ```
+
+### Key Considerations for Keycloak HA
+- **Session Persistence**: If Keycloak uses PostgreSQL for session storage, ensure the database is available during pod rescheduling. If using Infinispan, verify that the cache is replicated across Keycloak pods before draining nodes.
+- **Service Discovery**: Keycloak and PostgreSQL services should use Kubernetes services (e.g., ClusterIP) to abstract pod locations, ensuring clients reconnect seamlessly after rescheduling.
+- **Resource Constraints**: With only one worker node, monitor for resource bottlenecks. Keycloak and PostgreSQL can be resource-intensive, so adjust replicas or resource limits as needed.
+- **Pod Disruption Budgets (PDBs)**: If a PDB is configured for Keycloak or PostgreSQL, ensure it allows pod evictions during the drain process:
+  ```bash
+  kubectl get pdb -n <keycloak-namespace>
+  kubectl get pdb -n <postgres-namespace>
+  ```
+  Temporarily adjust or delete PDBs if they block draining:
+  ```bash
+  kubectl delete pdb <pdb-name> -n <namespace>
+  ```
+- **Backup**: Before draining, back up the PostgreSQL database used by Keycloak:
+  ```bash
+  kubectl exec -it -n <postgres-namespace> postgres-0 -- pg_dump -U <keycloak-user> <keycloak-db> > backup.sql
+  ```
+
+### Rollback Plan
+If Keycloak or PostgreSQL becomes unavailable:
+1. **Uncordon Nodes**:
+   ```bash
+   kubectl uncordon worker-node-2
+   kubectl uncordon worker-node-3
+   ```
+2. **Check Pod Issues**:
+   Use `kubectl describe pod` and `kubectl logs` to diagnose why Keycloak or PostgreSQL pods failed to reschedule.
+3. **Restore Nodes**: If nodes were deleted from the cloud provider, recreate them and rejoin them to the cluster.
+4. **Restore Data**: If PostgreSQL data is lost, restore from the backup.
+
+### Final Verification
+After node removal, ensure:
+- Keycloak is accessible and handles authentication correctly.
+- PostgreSQL is running and accessible by Keycloak.
+- Connection pools are routing traffic to the correct endpoints.
+- No resource bottlenecks exist on `worker-node-1`.
+
+By following these steps, you can safely shut down the two worker nodes while maintaining Keycloak’s availability in an HA setup with PostgreSQL. If you encounter specific errors (e.g., pod scheduling failures or session loss), share details for further assistance.
