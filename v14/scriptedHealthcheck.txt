@@ -47,24 +47,23 @@ backend app-backend
 
 
 ***  check using node ip
-check_k8s_pods.sh
 #!/bin/bash
 # check_k8s_pods.sh
 # Usage: check_k8s_pods.sh <node_ip>
 
 NODE_IP=$1
-APP_LABEL="app=my-app"
 NAMESPACE="default"
 
 # Get the node name corresponding to the provided IP
-NODE_NAME=$(kubectl get nodes -o json | jq -r ".items[] | select(.status.addresses[] | select(.type==\"InternalIP\" and .address==\"$NODE_IP\")) | .metadata.name")
+NODE_NAME=$(kubectl get nodes -o wide | grep "$NODE_IP" | awk '{print $1}')
 
-# Check if pods with APP_LABEL are running on NODE_NAME
+# Check if pods with name matching app-[0-9-] are running on NODE_NAME
 if [ -n "$NODE_NAME" ]; then
-  kubectl get pods -l "$APP_LABEL" -n "$NAMESPACE" -o json | \
-    jq -e ".items[] | select(.status.phase==\"Running\" and .spec.nodeName==\"$NODE_NAME\")" > /dev/null
+  kubectl get pods -n "$NAMESPACE" --field-selector spec.nodeName="$NODE_NAME" -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.status.phase}{"\n"}{end}' | grep -E "^app-[0-9-]" | grep -q "Running"
   exit $?
 else
   # Exit non-zero if no node matches the IP
   exit 1
 fi
+
+**
