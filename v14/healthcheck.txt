@@ -1,0 +1,31 @@
+kubectl get pods -o json | jq -r \
+  '.items[] | select(.metadata.name|test("myapp")) |
+   select(.status.phase == "Running") |
+   select([.status.containerStatuses[]?.ready]|all) |
+   .status.hostIP'
+
+
+- name: Get healthy myapp pod nodes
+  shell: >
+    kubectl get pods -o json | jq -r '
+      .items[] | select(.metadata.name|test("myapp")) |
+      select(.status.phase == "Running") |
+      select([.status.containerStatuses[]?.ready]|all) |
+      .status.hostIP'
+  register: healthy_nodes
+
+- name: Create HAProxy config from healthy nodes
+  template:
+    src: haproxy.cfg.j2
+    dest: /etc/haproxy/haproxy.cfg
+  vars:
+    healthy_ips: "{{ healthy_nodes.stdout_lines }}"
+
+
+haproxy.cfg.j2 (example):
+backend myapp_backend
+  option httpchk
+  http-check send meth GET uri /status
+  {% for ip in healthy_ips %}
+  server worker{{ loop.index }} {{ ip }}:PORT check
+  {% endfor %}
