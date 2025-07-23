@@ -1,0 +1,46 @@
+check_k8s_pods.sh
+
+#!/bin/bash
+# check_k8s_pods.sh
+# Usage: check_k8s_pods.sh <node_name>
+
+NODE_NAME=$1
+APP_LABEL="app=my-app"
+NAMESPACE="default"
+
+# Check if pods with APP_LABEL are running on NODE_NAME
+kubectl get pods -l "$APP_LABEL" -n "$NAMESPACE" -o json | \
+  jq -e ".items[] | select(.status.phase==\"Running\" and .spec.nodeName==\"$NODE_NAME\")" > /dev/null
+
+# Exit 0 if at least one pod is running, non-zero otherwise
+exit $?
+
+
+
+***
+Jinja2 Template (haproxy.cfg.j2)
+
+global
+    log /dev/log local0
+    maxconn 4096
+
+defaults
+    log global
+    mode http
+    timeout connect 5000ms
+    timeout client 50000ms
+    timeout server 50000ms
+
+frontend http-in
+    bind *:80
+    default_backend app-backend
+
+backend app-backend
+    balance roundrobin
+{% for node in healthy_nodes %}
+    server {{ node }} {{ node }}:8080 check inter 2000 rise 2 fall 3 check-ssl verify none external-check command "{{ check_script_path }} {{ node }}"
+{% endfor %}
+{% if healthy_nodes | length == 0 %}
+    # No healthy nodes available
+    server dummy 127.0.0.1:65535
+{% endif %}
