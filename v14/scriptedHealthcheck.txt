@@ -67,3 +67,47 @@ else
 fi
 
 **
+#!/bin/bash
+# check_k8s_pods.sh
+# Usage: check_k8s_pods.sh <node_ip>
+
+NODE_IP=$1
+NAMESPACE="default"
+
+# Get the node name corresponding to the provided IP
+NODE_NAME=$(kubectl get nodes -o wide | grep "$NODE_IP" | awk '{print $1}')
+
+# Check if pods with name matching app-[0-9-] and postgres-[0-9] are running on NODE_NAME
+if [ -n "$NODE_NAME" ]; then
+  PODS=$(kubectl get pods -n "$NAMESPACE" --field-selector spec.nodeName="$NODE_NAME" -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.status.phase}{"\n"}{end}')
+  echo "Pods on node $NODE_IP ($NODE_NAME):"
+  echo "$PODS"
+  
+  # Check for app pods
+  APP_PODS=$(echo "$PODS" | grep -E "^app-[0-9-]")
+  echo "App pods (app-[0-9-]):"
+  echo "$APP_PODS"
+  echo "$APP_PODS" | grep -q "Running"
+  APP_STATUS=$?
+  echo "App check status: $APP_STATUS"
+  
+  # Check for postgres pods
+  PG_PODS=$(echo "$PODS" | grep -E "^postgres-[0-9]")
+  echo "Postgres pods (postgres-[0-9]):"
+  echo "$PG_PODS"
+  echo "$PG_PODS" | grep -q "Running"
+  PG_STATUS=$?
+  echo "Postgres check status: $PG_STATUS"
+  
+  # Exit 0 only if both checks pass
+  if [ $APP_STATUS -eq 0 ] && [ $PG_STATUS -eq 0 ]; then
+    echo "Exit status for node $NODE_IP ($NODE_NAME): 0"
+    exit 0
+  else
+    echo "Exit status for node $NODE_IP ($NODE_NAME): 1"
+    exit 1
+  fi
+else
+  echo "No node found for IP $NODE_IP"
+  exit 1
+fi
