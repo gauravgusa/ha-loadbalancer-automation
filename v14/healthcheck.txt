@@ -29,3 +29,37 @@ backend myapp_backend
   {% for ip in healthy_ips %}
   server worker{{ loop.index }} {{ ip }}:PORT check
   {% endfor %}
+
+*****
+
+kubectl get pods -o wide | grep myapp
+kubectl get pods -o wide | grep myapp | awk '$3=="Running" && $2=="1/1"'
+kubectl get pods -o wide | grep myapp | awk '$3=="Running" && $2=="1/1" {print $7}'
+kubectl get pods -o json | jq -r '.items[] | select(.metadata.name | contains("myapp")) | select(.status.phase=="Running") | select([.status.containerStatuses[].ready]|all) | .spec.nodeName'
+
+Implementing in Ansible to Template HAProxy
+Ansible Playbook Snippet:
+- name: Get node names running healthy myapp pods
+  shell: >
+    kubectl get pods -o json | jq -r '
+      .items[] | select(.metadata.name | contains("myapp")) |
+      select(.status.phase=="Running") |
+      select([.status.containerStatuses[].ready]|all) |
+      .spec.nodeName'
+  register: healthy_nodes
+
+- name: Generate HAProxy config from healthy nodes
+  template:
+    src: haproxy.cfg.j2
+    dest: /etc/haproxy/haproxy.cfg
+  vars:
+    node_names: "{{ healthy_nodes.stdout_lines }}"
+
+Example Jinja2 Template for HAProxy (haproxy.cfg.j2):
+
+backend myapp_backend
+  option httpchk
+  {% for node in node_names %}
+  server {{ node }} {{ node }}:APP_PORT check
+  {% endfor %}
+
